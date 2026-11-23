@@ -50,6 +50,16 @@ class LoginRequest extends FormRequest
             ]);
         }
 
+        if ((int) Auth::user()->role < 5) {
+            Auth::guard('web')->logout();
+            $this->session()->invalidate();
+            $this->session()->regenerateToken();
+
+            throw ValidationException::withMessages([
+                'email' => 'Akun dengan role Supervisor atau Manager tidak memiliki akses.',
+            ]);
+        }
+
         RateLimiter::clear($this->throttleKey());
     }
 
