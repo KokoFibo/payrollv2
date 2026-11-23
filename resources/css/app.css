@@ -2,3 +2,157 @@
 @import "tailwindcss-primeui";
 
 @custom-variant dark (&:where(.app-dark, .app-dark *));
+
+@theme {
+    --font-sans: "Plus Jakarta Sans", "Figtree", ui-sans-serif, system-ui, sans-serif;
+    --color-brand-50: oklch(0.97 0.015 248);
+    --color-brand-100: oklch(0.94 0.03 248);
+    --color-brand-200: oklch(0.88 0.06 248);
+    --color-brand-300: oklch(0.8 0.1 248);
+    --color-brand-400: oklch(0.7 0.14 248);
+    --color-brand-500: oklch(0.6 0.17 248);
+    --color-brand-600: oklch(0.51 0.17 248);
+    --color-brand-700: oklch(0.43 0.15 248);
+    --color-brand-800: oklch(0.36 0.12 248);
+    --color-brand-900: oklch(0.3 0.09 248);
+    --color-brand-950: oklch(0.2 0.06 248);
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    min-height: 100vh;
+    background: var(--color-slate-50);
+    color: var(--color-slate-900);
+}
+
+.app-dark body {
+    background: var(--color-slate-950);
+    color: var(--color-slate-100);
+}
+
+.p-card {
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.p-datatable-table-container {
+    scrollbar-width: thin;
+}
+
+.p-datatable .p-datatable-thead > tr > th {
+    background: var(--color-slate-50);
+    color: var(--color-slate-500);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.app-dark .p-datatable .p-datatable-thead > tr > th {
+    background: var(--color-slate-950);
+    color: var(--color-slate-400);
+}
+
+.p-datatable .p-datatable-tbody > tr > td {
+    padding-block: 0.85rem;
+}
+
+.p-button {
+    min-height: 2.5rem;
+    padding: 0.5rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1.1rem;
+    white-space: nowrap;
+}
+
+.p-button .p-button-label {
+    font-size: inherit;
+}
+
+.p-inputtext,
+.p-select-label,
+.p-inputnumber-input,
+.p-textarea,
+.p-paginator,
+.p-datatable .p-datatable-tbody > tr > td {
+    font-size: 0.8rem;
+}
+
+.p-select {
+    min-width: 7rem;
+}
+
+.p-select-label {
+    overflow: visible;
+    padding-block: 0.45rem;
+    text-overflow: clip;
+    white-space: nowrap;
+}
+
+.p-select-dropdown {
+    width: 2rem;
+}
+
+.p-datatable .p-paginator {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+}
+
+.p-datatable .p-paginator .p-select {
+    width: 4.5rem;
+    min-width: 4.5rem;
+}
+
+.p-datatable .p-paginator .p-paginator-page,
+.p-datatable .p-paginator .p-paginator-prev,
+.p-datatable .p-paginator .p-paginator-next {
+    min-width: 1.9rem;
+    height: 1.9rem;
+}
+
+.p-datatable .p-datatable-tbody > tr > td.p-datatable-frozen-column {
+    background: #fff;
+}
+
+.p-datatable .p-datatable-thead > tr > th.p-datatable-frozen-column {
+    background: var(--color-slate-50);
+}
+
+.app-dark .p-datatable .p-datatable-tbody > tr > td.p-datatable-frozen-column {
+    background: var(--color-slate-900);
+}
+
+.app-dark .p-datatable .p-datatable-thead > tr > th.p-datatable-frozen-column {
+    background: var(--color-slate-950);
+}
+
+.p-dialog {
+    border-radius: 1.25rem;
+}
+
+@media print {
+    aside,
+    header,
+    .p-button,
+    .p-paginator {
+        display: none !important;
+    }
+
+    main {
+        max-width: none !important;
+        padding: 0 !important;
+    }
+
+    body {
+        background: white !important;
+        color: black !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+}

@@ -17,7 +17,7 @@ test('users can authenticate using the login screen', function () {
     ]);
 
     $this->assertAuthenticated();
-    $response->assertRedirect(route('dashboard', absolute: false));
+    $response->assertRedirect(route('admin.dashboard', absolute: false));
 });
 
 test('users can not authenticate with invalid password', function () {
@@ -39,3 +39,12 @@ test('users can logout', function () {
     $this->assertGuest();
     $response->assertRedirect('/');
 });
+
+test('authenticated roles below admin cannot access the application', function (int $role) {
+    $user = User::factory()->create(['role' => $role]);
+
+    $this->actingAs($user)->get('/admin')->assertForbidden();
+})->with([
+    'supervisor' => [3],
+    'manager' => [4],
+]);
