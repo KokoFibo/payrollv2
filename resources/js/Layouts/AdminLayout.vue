@@ -190,7 +190,17 @@ watch(
                                 <i class="pi pi-chevron-down hidden text-[10px] text-slate-400 sm:block" />
                             </span>
                         </Button>
-                        <Menu id="user-menu" ref="userMenu" :model="userMenuItems" popup />
+                        <Menu
+                            id="user-menu"
+                            ref="userMenu"
+                            :model="userMenuItems"
+                            popup
+                            :pt="{
+                                itemLink: { class: 'py-1.5' },
+                                itemIcon: { class: 'text-[10px]' },
+                                itemLabel: { class: 'text-[11px] font-medium leading-none' },
+                            }"
+                        />
                     </div>
                 </div>
             </header>

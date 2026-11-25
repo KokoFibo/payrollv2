@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { Head, Link, useForm, usePage } from "@inertiajs/vue3";
 import AdminLayout from "@/Layouts/AdminLayout.vue";
 import PageHeader from "@/Components/Admin/PageHeader.vue";
@@ -14,7 +14,6 @@ const page = usePage();
 const user = computed(() => page.props.auth?.user ?? {});
 const roleName = computed(() => page.props.auth?.roleName || "User");
 const initial = computed(() => (user.value.name || "U").charAt(0).toUpperCase());
-const deleteDialog = ref(false);
 
 const profileForm = useForm({
     name: user.value.name || "",
@@ -25,10 +24,6 @@ const passwordForm = useForm({
     current_password: "",
     password: "",
     password_confirmation: "",
-});
-
-const deleteForm = useForm({
-    password: "",
 });
 
 function updateProfile() {
@@ -44,12 +39,6 @@ function updatePassword() {
     });
 }
 
-function deleteAccount() {
-    deleteForm.delete(route("profile.destroy"), {
-        preserveScroll: true,
-        onFinish: () => deleteForm.reset(),
-    });
-}
 </script>
 
 <template>
@@ -161,37 +150,8 @@ function deleteAccount() {
                         </template>
                     </Card>
 
-                    <Card class="border border-rose-200 bg-rose-50/70 dark:border-rose-500/20 dark:bg-rose-500/10">
-                        <template #content>
-                            <div class="flex items-start gap-3">
-                                <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300">
-                                    <i class="pi pi-trash" />
-                                </span>
-                                <div>
-                                    <h3 class="text-sm font-bold text-rose-950 dark:text-rose-100">Hapus akun</h3>
-                                    <p class="mt-1 text-xs leading-5 text-rose-700 dark:text-rose-300">Tindakan permanen. Akun akan keluar dan tidak dapat digunakan kembali.</p>
-                                    <Button label="Hapus akun" icon="pi pi-trash" severity="danger" text class="mt-3 px-0" @click="deleteDialog = true" />
-                                </div>
-                            </div>
-                        </template>
-                    </Card>
                 </div>
             </div>
         </div>
-
-        <Dialog v-model:visible="deleteDialog" modal header="Hapus akun permanen?" class="w-full max-w-lg">
-            <div class="space-y-5">
-                <Message severity="error" :closable="false">
-                    Semua akses akun ini akan dihentikan. Masukkan password untuk melanjutkan.
-                </Message>
-                <FormField label="Password" :error="deleteForm.errors.password" required>
-                    <InputText v-model="deleteForm.password" type="password" class="h-12 w-full" autocomplete="current-password" required />
-                </FormField>
-                <div class="flex justify-end gap-2">
-                    <Button label="Batal" severity="secondary" text @click="deleteDialog = false" />
-                    <Button label="Hapus akun" icon="pi pi-trash" severity="danger" :loading="deleteForm.processing" @click="deleteAccount" />
-                </div>
-            </div>
-        </Dialog>
     </AdminLayout>
 </template>
