@@ -26,11 +26,11 @@ import BrandLogo from "@/Components/BrandLogo.vue";
                         <i class="pi pi-lock mr-1.5 text-xs" />
                         Secure payroll operations
                     </Tag>
-                    <h1 class="max-w-2xl text-5xl font-extrabold leading-[1.05] tracking-[-0.055em] text-slate-950 dark:text-white">
-                        Kelola people, attendance, dan payroll dalam satu workspace.
+                    <h1 class="max-w-2xl text-5xl font-extrabold leading-[1.12] tracking-[-0.025em] text-slate-950 dark:text-white">
+                        Manage people, attendance, and payroll in one workspace.
                     </h1>
                     <p class="mt-6 max-w-xl text-base leading-8 text-slate-500 dark:text-slate-400">
-                        Data karyawan, absensi, periode gaji, laporan, dan export administrasi tersusun dalam alur kerja yang konsisten.
+                        Employee data, attendance, payroll periods, reports, and administrative exports stay aligned in a consistent workflow.
                     </p>
 
                     <div class="mt-10 grid max-w-xl grid-cols-3 gap-3">

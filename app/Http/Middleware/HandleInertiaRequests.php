@@ -45,6 +45,7 @@ class HandleInertiaRequests extends Middleware
                 'can' => [
                     'superAdmin' => $request->user()?->can('access-super-admin-dashboard') ?? false,
                     'managePayroll' => $request->user()?->can('manage-payroll') ?? false,
+                    'payrollReports' => $request->user()?->can('access-payroll-reports') ?? false,
                     'manageUsers' => $request->user()?->can('manage-users') ?? false,
                     'exportEmployees' => $request->user()?->can('export-employees') ?? false,
                     'exportEmployeesKhusus' => $request->user()?->can('export-employees-khusus') ?? false,

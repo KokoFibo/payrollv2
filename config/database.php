@@ -19,6 +19,8 @@ return [
 
     'default' => env('DB_CONNECTION', 'mysql'),
 
+    'source_database' => env('DB_SOURCE_DATABASE'),
+
     /*
     |--------------------------------------------------------------------------
     | Database Connections

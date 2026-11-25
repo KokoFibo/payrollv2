@@ -3,6 +3,11 @@
 namespace App\Providers;
 
 use App\Models\User;
+use App\Support\Attendance\AttendanceScheduleResolver;
+use App\Support\Attendance\CalendarOverrideResolver;
+use App\Support\Attendance\NationalHolidayResolver;
+use App\Support\Attendance\SpecialWorkScheduleResolver;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Vite;
 use Illuminate\Support\ServiceProvider;
@@ -14,7 +19,14 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(
+            AttendanceScheduleResolver::class,
+            fn (Application $app): AttendanceScheduleResolver => new AttendanceScheduleResolver(
+                $app->make(SpecialWorkScheduleResolver::class),
+                $app->make(NationalHolidayResolver::class),
+                $app->make(CalendarOverrideResolver::class),
+            ),
+        );
     }
 
     /**
@@ -37,6 +49,11 @@ class AppServiceProvider extends ServiceProvider
         Gate::define(
             'manage-payroll',
             fn (User $user): bool => (int) $user->role >= 5,
+        );
+
+        Gate::define(
+            'access-payroll-reports',
+            fn (User $user): bool => (int) $user->role >= 6,
         );
 
         Gate::define(

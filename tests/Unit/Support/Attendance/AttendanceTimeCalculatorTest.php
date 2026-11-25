@@ -1,0 +1,158 @@
+<?php
+
+use App\Support\Attendance\AttendanceSchedule;
+use App\Support\Attendance\AttendanceTimeCalculator;
+use Carbon\CarbonImmutable;
+
+it('starts regular work at the scheduled time when the employee arrives early', function () {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 07:00:00'),
+            attendancePunch('2026-11-19 11:30:00'),
+            attendancePunch('2026-11-19 12:30:00'),
+            attendancePunch('2026-11-19 17:29:00'),
+        ],
+    );
+
+    expect($result)
+        ->worked_hours->toBe(8.0)
+        ->overtime_hours->toBe(0.0);
+});
+
+it('counts overtime from the first complete half hour after the regular shift', function (string $checkOut, float $overtime) {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 11:30:00'),
+            attendancePunch('2026-11-19 12:30:00'),
+            attendancePunch($checkOut),
+        ],
+    );
+
+    expect($result['overtime_hours'])->toBe($overtime)
+        ->and($result['worked_hours'])->toBe(8.0);
+})->with([
+    '29 minutes past' => ['2026-11-19 17:29:00', 0.0],
+    '30 minutes past' => ['2026-11-19 17:30:00', 0.5],
+    '1 hour 29 minutes past' => ['2026-11-19 18:29:00', 1.0],
+    '1 hour 30 minutes past' => ['2026-11-19 18:30:00', 1.5],
+]);
+
+it('uses overtime slots when the second checkout is followed by a break and overtime', function () {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 11:30:00'),
+            attendancePunch('2026-11-19 12:30:00'),
+            attendancePunch('2026-11-19 17:00:00'),
+            attendancePunch('2026-11-19 17:30:00'),
+            attendancePunch('2026-11-19 18:30:00'),
+        ],
+    );
+
+    expect($result)
+        ->worked_hours->toBe(8.0)
+        ->overtime_hours->toBe(1.0);
+});
+
+it('doubles regular and overtime hours on holiday pay dates', function () {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19', holidayPay: true),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 11:30:00'),
+            attendancePunch('2026-11-19 12:30:00'),
+            attendancePunch('2026-11-19 18:30:00'),
+        ],
+    );
+
+    expect($result)
+        ->worked_hours->toBe(0.0)
+        ->overtime_hours->toBe(0.0)
+        ->holiday_worked_hours->toBe(16.0)
+        ->holiday_overtime_hours->toBe(3.0);
+});
+
+it('rounds actual worked hours down to the nearest half hour', function () {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 09:36:00'),
+            attendancePunch('2026-11-19 09:36:00'),
+            attendancePunch('2026-11-19 09:36:00'),
+        ],
+    );
+
+    expect($result['worked_hours'])->toBe(1.5);
+});
+
+it('rounds each work session down before summing the sessions', function () {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 08:50:00'),
+            attendancePunch('2026-11-19 09:10:00'),
+            attendancePunch('2026-11-19 09:58:00'),
+        ],
+    );
+
+    expect($result['worked_hours'])->toBe(1.0);
+});
+
+it('caps friday and saturday regular work hours', function (string $date, float $standardHours) {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule($date, standardHours: $standardHours),
+        [
+            attendancePunch("{$date} 08:00:00"),
+            attendancePunch("{$date} 11:30:00"),
+            attendancePunch("{$date} 12:30:00"),
+            attendancePunch("{$date} 17:00:00"),
+        ],
+    );
+
+    expect($result['worked_hours'])->toBe($standardHours);
+})->with([
+    'friday' => ['2026-11-20', 7.5],
+    'saturday' => ['2026-11-21', 6.0],
+]);
+
+function attendanceTimeSchedule(
+    string $date,
+    float $standardHours = 8,
+    bool $holidayPay = false,
+): AttendanceSchedule {
+    $attendanceDate = CarbonImmutable::parse($date);
+
+    return new AttendanceSchedule(
+        profile: 'general',
+        profileLabel: 'Produksi / Umum',
+        shift: 'day',
+        expectedCheckIn: $attendanceDate->setTime(8, 0),
+        expectedCheckOut: $attendanceDate->setTime(17, 0),
+        standardWorkHours: $standardHours,
+        isHolidayPay: $holidayPay,
+        holidayName: $holidayPay ? 'Hari Libur' : null,
+        expectedPunchCount: 4,
+        requiresReview: false,
+    );
+}
+
+/**
+ * @return array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}
+ */
+function attendancePunch(string $dateTime): array
+{
+    $punchedAt = CarbonImmutable::parse($dateTime);
+
+    return [
+        'raw_value' => $punchedAt->format('g:i A'),
+        'punched_at' => $punchedAt,
+        'is_next_day' => false,
+        'sequence' => 1,
+    ];
+}

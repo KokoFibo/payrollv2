@@ -13,15 +13,18 @@ class AttendanceRecordFactory extends Factory
 {
     public function definition(): array
     {
-        $checkIn = fake()->time('H:i:s', '08:30:00');
+        $firstIn = fake()->time('H:i:s', '08:30:00');
+        $firstOut = fake()->time('H:i:s', '18:00:00');
 
         return [
             'karyawan_id' => Karyawan::factory(),
             'attendance_date' => fake()->dateTimeBetween('-30 days', 'today')->format('Y-m-d'),
             'status' => fake()->randomElement(array_keys(AttendanceRecord::STATUSES)),
-            'check_in' => $checkIn,
-            'check_out' => fake()->time('H:i:s', '18:00:00'),
-            'overtime_minutes' => fake()->randomElement([0, 0, 30, 60, 90]),
+            'first_in' => $firstIn,
+            'first_out' => $firstOut,
+            'worked_hours' => 8,
+            'worked_days' => 1,
+            'overtime_hours' => fake()->randomElement([0, 0, 0.5, 1, 1.5]),
             'notes' => fake()->optional()->sentence(),
             'recorded_by' => null,
         ];

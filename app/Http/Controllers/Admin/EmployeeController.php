@@ -115,12 +115,6 @@ class EmployeeController extends Controller
                     $filters,
                     ['company_id' => 'companyId', 'directorate_id' => 'directorateId', 'department_id' => 'departmentId'],
                 ),
-                'etnis' => $this->relatedOptions(
-                    Etnis::class,
-                    'etnis_id',
-                    $filters,
-                    ['company_id' => 'companyId', 'directorate_id' => 'directorateId', 'department_id' => 'departmentId', 'jabatan_id' => 'jabatanId'],
-                ),
                 'statuses' => collect(KaryawanStatus::filterOptions())
                     ->map(fn (string $label, string $value): array => compact('value', 'label'))
                     ->values()
@@ -348,7 +342,6 @@ class EmployeeController extends Controller
      *     directorateId: string,
      *     departmentId: string,
      *     jabatanId: string,
-     *     etnisId: string,
      *     perPage: int,
      *     sortField: string,
      *     sortDirection: string
@@ -367,7 +360,6 @@ class EmployeeController extends Controller
             'directorateId' => (string) $request->query('directorateId', ''),
             'departmentId' => (string) $request->query('departmentId', ''),
             'jabatanId' => (string) $request->query('jabatanId', ''),
-            'etnisId' => (string) $request->query('etnisId', ''),
             'perPage' => in_array($perPage, self::PER_PAGE_OPTIONS, true) ? $perPage : 10,
             'sortField' => in_array($sortField, self::SORTABLE_FIELDS, true) ? $sortField : 'nip',
             'sortDirection' => in_array($sortDirection, ['asc', 'desc'], true) ? $sortDirection : 'desc',
@@ -401,7 +393,6 @@ class EmployeeController extends Controller
             ->when($filters['directorateId'] !== '', fn (Builder $query) => $query->where('directorate_id', $filters['directorateId']))
             ->when($filters['departmentId'] !== '', fn (Builder $query) => $query->where('department_id', $filters['departmentId']))
             ->when($filters['jabatanId'] !== '', fn (Builder $query) => $query->where('jabatan_id', $filters['jabatanId']))
-            ->when($filters['etnisId'] !== '', fn (Builder $query) => $query->where('etnis_id', $filters['etnisId']))
             ->orderBy((string) $filters['sortField'], (string) $filters['sortDirection'])
             ->when(
                 $filters['sortField'] !== 'nip',

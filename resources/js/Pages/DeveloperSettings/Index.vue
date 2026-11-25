@@ -7,6 +7,10 @@ import PageHeader from "@/Components/Admin/PageHeader.vue";
 import StatCard from "@/Components/Admin/StatCard.vue";
 import FormField from "@/Components/Admin/FormField.vue";
 import EmptyState from "@/Components/Admin/EmptyState.vue";
+import AttendanceCleanupPanel from "@/Components/Admin/DeveloperSettings/AttendanceCleanupPanel.vue";
+import CalendarOverridePanel from "@/Components/Admin/DeveloperSettings/CalendarOverridePanel.vue";
+import NationalHolidayPanel from "@/Components/Admin/DeveloperSettings/NationalHolidayPanel.vue";
+import SpecialWorkSchedulePanel from "@/Components/Admin/DeveloperSettings/SpecialWorkSchedulePanel.vue";
 
 const props = defineProps({
     resource: { type: String, required: true },
@@ -15,7 +19,15 @@ const props = defineProps({
     records: { type: Object, required: true },
     filters: { type: Object, required: true },
     preview: { type: Object, required: true },
+    sourceDatabase: { type: String, default: "" },
     migrationResult: { type: Object, default: null },
+    masterCopyResult: { type: Object, default: null },
+    attendanceCleanupMonths: { type: Array, required: true },
+    attendanceCleanupResult: { type: Object, default: null },
+    nationalHolidays: { type: Array, required: true },
+    calendarOverrides: { type: Array, required: true },
+    specialWorkSchedules: { type: Array, required: true },
+    workCalendarOptions: { type: Object, required: true },
     counts: { type: Object, required: true },
     adminSalaryLimit: { type: Number, required: true },
 });
@@ -28,6 +40,7 @@ const searchTimer = ref(null);
 const dialogVisible = ref(false);
 const editingRecord = ref(null);
 const copying = ref(false);
+const copyingMasterData = ref(false);
 const mappingReviewed = ref(false);
 const salaryLimitForm = useForm({
     admin_salary_limit: props.adminSalaryLimit,
@@ -43,9 +56,14 @@ const resourceVisuals = {
 };
 
 const navigationItems = computed(() => [
-    { value: "import", label: "Copy Karyawan", caption: "Mapping & migrasi", icon: "pi pi-cloud-download" },
+    { value: "import", section: "import", label: "Copy Karyawan", caption: "Mapping & migrasi", icon: "pi pi-cloud-download" },
+    { value: "holidays", section: "holidays", label: "Hari Libur", caption: "Kalender nasional", icon: "pi pi-calendar" },
+    { value: "calendar-overrides", section: "calendar-overrides", label: "Pengecualian Kalender", caption: "Libur per company", icon: "pi pi-calendar-clock" },
+    { value: "work-schedules", section: "work-schedules", label: "Jadwal Kerja", caption: "Ramadan & periode khusus", icon: "pi pi-clock" },
+    { value: "attendance-cleanup", section: "attendance-cleanup", label: "Bersihkan Presensi", caption: "Hapus rekap per bulan", icon: "pi pi-trash" },
     ...props.resources.map((item) => ({
         value: item.value,
+        section: "master",
         label: resourceVisuals[item.value]?.label ?? item.label,
         caption: resourceVisuals[item.value]?.caption ?? "Master data",
         icon: resourceVisuals[item.value]?.icon ?? "pi pi-database",
@@ -62,6 +80,7 @@ const form = useForm({
 
 const previewData = computed(() => props.preview?.data);
 const previewSummary = computed(() => previewData.value?.summary ?? {});
+const sourceDatabaseLabel = computed(() => props.sourceDatabase || "configured source database");
 
 watch(
     () => props.resource,
@@ -93,8 +112,8 @@ function onSearch() {
 }
 
 function selectSection(item) {
-    if (item.value === "import") {
-        section.value = "import";
+    if (item.section !== "master") {
+        section.value = item.section;
 
         return;
     }
@@ -108,6 +127,12 @@ function selectSection(item) {
             perPage: perPage.value,
         });
     }
+}
+
+function isActiveNavigationItem(item) {
+    return item.section === "master"
+        ? section.value === "master" && item.value === props.resource
+        : section.value === item.section;
 }
 
 function saveSalaryLimit() {
@@ -191,16 +216,37 @@ function copyEmployees() {
     }
 
     confirm.require({
-        message: "Seluruh data karyawan dari database payrollok akan disalin. Proses berjalan dalam satu transaksi dan dapat membatalkan semua perubahan jika gagal.",
-        header: "Mulai copy karyawan?",
+        message: `Semua karyawan di database target akan dihapus permanen terlebih dahulu. Attendance dan payroll item yang terhubung juga akan terhapus karena cascade. Setelah itu seluruh karyawan dari ${sourceDatabaseLabel.value} disalin ulang.`,
+        header: "Ganti seluruh data karyawan?",
         icon: "pi pi-database",
         rejectLabel: "Batal",
-        acceptLabel: "Mulai Copy",
+        acceptLabel: "Hapus & Copy",
         accept: () => {
             copying.value = true;
             router.post(route("admin.developer-settings.copy"), {}, {
                 onFinish: () => {
                     copying.value = false;
+                },
+            });
+        },
+    });
+}
+
+function copyMasterData() {
+    confirm.require({
+        message: `Semua Company, Directorate, Department, Jabatan, dan Job Grade di database target akan dihapus permanen sebelum disalin ulang dari ${sourceDatabaseLabel.value}. Data kalender dengan company terkait dapat ikut terhapus, dan referensi master pada karyawan akan menjadi kosong sampai Copy Karyawan dijalankan.`,
+        header: "Ganti seluruh 5 tabel master?",
+        icon: "pi pi-exclamation-triangle",
+        rejectLabel: "Batal",
+        acceptLabel: "Hapus & Copy",
+        rejectClass: "p-button-secondary p-button-outlined",
+        acceptClass: "p-button-danger",
+        accept: () => {
+            copyingMasterData.value = true;
+            router.post(route("admin.developer-settings.copy-master-data"), {}, {
+                preserveScroll: true,
+                onFinish: () => {
+                    copyingMasterData.value = false;
                 },
             });
         },
@@ -245,7 +291,7 @@ function copyEmployees() {
                     <div class="grid grid-cols-2 gap-3">
                         <div class="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
                             <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Source</p>
-                            <p class="mt-2 font-mono text-sm font-semibold text-white">payrollok</p>
+                            <p class="mt-2 font-mono text-sm font-semibold text-white">{{ props.sourceDatabase || "Not configured" }}</p>
                             <p class="mt-1 text-xs text-slate-400">Read-only preview</p>
                         </div>
                         <div class="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
@@ -261,6 +307,61 @@ function copyEmployees() {
                 <StatCard label="Employees" :value="counts.employees.toLocaleString('id-ID')" description="Total data target" icon="pi pi-users" tone="brand" />
                 <StatCard label="Active Employees" :value="counts.activeEmployees.toLocaleString('id-ID')" description="PKWT dan PKWTT" icon="pi pi-check-circle" tone="emerald" />
             </div>
+
+            <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
+                <template #title>
+                    <div class="flex flex-col gap-4 px-1 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                            <h2 class="text-base font-bold text-slate-950 dark:text-white">Ganti master data referensi</h2>
+                            <p class="mt-1 max-w-3xl text-xs font-normal leading-5 text-slate-500 dark:text-slate-400">
+                                Ganti seluruh Company, Directorate, Department, Jabatan, dan Job Grade di database target dengan data terbaru dari <span class="font-mono">{{ props.sourceDatabase || "configured source" }}</span>. Data lama dihapus lebih dahulu dalam transaksi yang sama.
+                            </p>
+                        </div>
+                        <Button
+                            label="Ganti 5 tabel"
+                            icon="pi pi-copy"
+                            severity="danger"
+                            :loading="copyingMasterData"
+                            @click="copyMasterData"
+                        />
+                    </div>
+                </template>
+                <template #content>
+                    <div class="flex flex-wrap gap-2">
+                        <Tag severity="secondary"><i class="pi pi-building mr-1.5" />Company</Tag>
+                        <Tag severity="secondary"><i class="pi pi-sitemap mr-1.5" />Directorate</Tag>
+                        <Tag severity="secondary"><i class="pi pi-building mr-1.5" />Department</Tag>
+                        <Tag severity="secondary"><i class="pi pi-briefcase mr-1.5" />Jabatan</Tag>
+                        <Tag severity="secondary"><i class="pi pi-layers mr-1.5" />Job Grade</Tag>
+                    </div>
+
+                    <ProgressBar v-if="copyingMasterData" mode="indeterminate" class="mt-4" />
+
+                    <div v-if="masterCopyResult" class="mt-5 overflow-hidden rounded-xl border border-emerald-200 dark:border-emerald-500/20">
+                        <DataTable :value="masterCopyResult.statistics" size="small" scrollable>
+                            <Column field="label" header="Tabel" style="min-width: 140px" />
+                            <Column field="deleted_rows" header="Dihapus" style="min-width: 90px">
+                                <template #body="{ data }">{{ Number(data.deleted_rows ?? 0).toLocaleString("id-ID") }}</template>
+                            </Column>
+                            <Column field="source_rows" header="Source" style="min-width: 90px">
+                                <template #body="{ data }">{{ data.source_rows.toLocaleString("id-ID") }}</template>
+                            </Column>
+                            <Column field="created_rows" header="Baru" style="min-width: 80px">
+                                <template #body="{ data }"><span class="font-semibold text-emerald-700 dark:text-emerald-300">{{ data.created_rows.toLocaleString("id-ID") }}</span></template>
+                            </Column>
+                            <Column field="updated_rows" header="Diperbarui" style="min-width: 105px">
+                                <template #body="{ data }">{{ data.updated_rows.toLocaleString("id-ID") }}</template>
+                            </Column>
+                            <Column field="skipped_rows" header="Dilewati" style="min-width: 90px">
+                                <template #body="{ data }">{{ data.skipped_rows.toLocaleString("id-ID") }}</template>
+                            </Column>
+                            <Column field="target_rows" header="Target" style="min-width: 90px">
+                                <template #body="{ data }">{{ data.target_rows.toLocaleString("id-ID") }}</template>
+                            </Column>
+                        </DataTable>
+                    </div>
+                </template>
+            </Card>
 
             <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
                 <template #title>
@@ -289,13 +390,13 @@ function copyEmployees() {
                 </template>
             </Card>
 
-            <nav class="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200/80 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-3 xl:grid-cols-7" aria-label="Navigasi Developer Settings">
+            <nav class="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200/80 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-3 xl:grid-cols-8" aria-label="Navigasi Developer Settings">
                 <Button
                     v-for="item in navigationItems"
                     :key="item.value"
                     type="button"
-                    :severity="(section === 'import' && item.value === 'import') || (section === 'master' && item.value === resource) ? 'primary' : 'secondary'"
-                    :text="!((section === 'import' && item.value === 'import') || (section === 'master' && item.value === resource))"
+                    :severity="isActiveNavigationItem(item) ? 'primary' : 'secondary'"
+                    :text="!isActiveNavigationItem(item)"
                     class="h-auto justify-start rounded-xl px-3 py-3 text-left"
                     @click="selectSection(item)"
                 >
@@ -308,6 +409,31 @@ function copyEmployees() {
                     </span>
                 </Button>
             </nav>
+
+            <section v-show="section === 'holidays'" class="space-y-4">
+                <NationalHolidayPanel :holidays="nationalHolidays" />
+            </section>
+
+            <section v-show="section === 'calendar-overrides'" class="space-y-4">
+                <CalendarOverridePanel
+                    :overrides="calendarOverrides"
+                    :options="workCalendarOptions"
+                />
+            </section>
+
+            <section v-show="section === 'work-schedules'" class="space-y-4">
+                <SpecialWorkSchedulePanel
+                    :schedules="specialWorkSchedules"
+                    :options="workCalendarOptions"
+                />
+            </section>
+
+            <section v-show="section === 'attendance-cleanup'" class="space-y-4">
+                <AttendanceCleanupPanel
+                    :months="attendanceCleanupMonths"
+                    :result="attendanceCleanupResult"
+                />
+            </section>
 
             <section v-show="section === 'master'" class="space-y-4">
                 <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
@@ -377,7 +503,7 @@ function copyEmployees() {
 
                 <template v-if="previewData">
                     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                        <StatCard label="Source Rows" :value="previewData.source.row_count.toLocaleString('id-ID')" description="payrollok.karyawans" icon="pi pi-database" />
+                        <StatCard label="Source Rows" :value="previewData.source.row_count.toLocaleString('id-ID')" :description="`${previewData.source.database}.${previewData.source.table}`" icon="pi pi-database" />
                         <StatCard label="Target Rows" :value="previewData.target.row_count.toLocaleString('id-ID')" description="Target karyawans" icon="pi pi-table" tone="sky" />
                         <StatCard label="Mapped Fields" :value="previewSummary.mapped_fields.toLocaleString('id-ID')" description="Kolom memiliki padanan" icon="pi pi-directions" tone="emerald" />
                         <StatCard label="Transformed" :value="previewSummary.transformed_fields.toLocaleString('id-ID')" description="Nilai perlu transformasi" icon="pi pi-sync" tone="amber" />
