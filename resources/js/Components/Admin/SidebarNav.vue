@@ -24,10 +24,18 @@ const navigation = computed(() => {
         items.push(
             { label: "Employees", routeName: "admin.employees.index", icon: "pi pi-users" },
             { label: "Attendance", routeName: "admin.attendance.index", icon: "pi pi-clock" },
+        );
+    }
+
+    if (page.props.auth?.can?.payrollReports) {
+        items.push(
             { label: "Payroll", routeName: "admin.payroll.index", icon: "pi pi-wallet" },
             { label: "Reports", routeName: "admin.reports.index", icon: "pi pi-chart-bar" },
-            { label: "Settings", routeName: "admin.settings.index", icon: "pi pi-cog" },
         );
+    }
+
+    if (page.props.auth?.can?.managePayroll) {
+        items.push({ label: "Settings", routeName: "admin.settings.index", icon: "pi pi-cog" });
     }
 
     if (page.props.auth?.can?.developer) {

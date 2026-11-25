@@ -10,25 +10,25 @@ const features = [
     {
         icon: "pi pi-users",
         title: "Employee records",
-        description: "Profil, struktur organisasi, status kontrak, dan data payroll tersimpan dalam satu sumber.",
+        description: "Keep profiles, organization structure, contract status, and payroll data in one reliable source.",
         tone: "bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300",
     },
     {
         icon: "pi pi-clock",
         title: "Attendance",
-        description: "Catat kehadiran, keterlambatan, cuti, lembur, dan status remote secara harian.",
+        description: "Track daily attendance, lateness, leave, overtime, and remote work status.",
         tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300",
     },
     {
         icon: "pi pi-wallet",
         title: "Payroll periods",
-        description: "Buat periode payroll, hitung gross dan deduction, lalu proses sampai pembayaran.",
+        description: "Create payroll periods, calculate gross pay and deductions, then process payments.",
         tone: "bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300",
     },
     {
         icon: "pi pi-chart-bar",
         title: "Reporting",
-        description: "Pantau headcount, komposisi organisasi, absensi, dan nilai payroll dari dashboard analitik.",
+        description: "Monitor headcount, organization composition, attendance, and payroll values from one analytics dashboard.",
         tone: "bg-sky-50 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300",
     },
 ];
@@ -48,10 +48,10 @@ const features = [
             <BrandLogo />
             <div class="flex items-center gap-2">
                 <Link v-if="isAuthenticated" :href="route('admin.dashboard')">
-                    <Button label="Buka dashboard" icon="pi pi-arrow-right" icon-pos="right" severity="danger" />
+                    <Button label="Open dashboard" icon="pi pi-arrow-right" icon-pos="right" severity="danger" />
                 </Link>
                 <Link v-else :href="route('login')">
-                    <Button label="Masuk" icon="pi pi-lock" severity="danger" />
+                    <Button label="Sign in" icon="pi pi-lock" severity="danger" />
                 </Link>
             </div>
         </header>
@@ -63,16 +63,16 @@ const features = [
                         <span class="mr-2 h-1.5 w-1.5 rounded-full bg-red-500" />
                         Internal payroll workspace
                     </Tag>
-                    <h1 class="mt-7 max-w-3xl text-4xl font-extrabold leading-[1.03] tracking-[-0.06em] text-slate-950 dark:text-white sm:text-6xl">
-                        Operasional payroll yang rapi, terukur, dan mudah diaudit.
+                    <h1 class="mt-7 max-w-3xl text-4xl font-extrabold leading-[1.08] tracking-[-0.025em] text-slate-950 dark:text-white sm:text-6xl">
+                        Payroll operations built for clarity, control, and easy audits.
                     </h1>
                     <p class="mt-6 max-w-2xl text-base leading-8 text-slate-500 dark:text-slate-400 sm:text-lg">
-                        Satu workspace untuk data karyawan, absensi, proses payroll, laporan, dan export administrasi dengan kontrol akses berlapis.
+                        One workspace for employee data, attendance, payroll processing, reporting, and administrative exports, with layered access controls.
                     </p>
                     <div class="mt-8 flex flex-wrap items-center gap-3">
                         <Link :href="isAuthenticated ? route('admin.dashboard') : route('login')">
                             <Button
-                                :label="isAuthenticated ? 'Lanjutkan ke dashboard' : 'Login ke workspace'"
+                                :label="isAuthenticated ? 'Continue to dashboard' : 'Sign in to workspace'"
                                 icon="pi pi-arrow-right"
                                 icon-pos="right"
                                 severity="danger"
@@ -100,7 +100,7 @@ const features = [
                             <div class="rounded-2xl bg-slate-950 p-4 text-white dark:bg-white dark:text-slate-950">
                                 <i class="pi pi-wallet text-red-400 dark:text-red-600" />
                                 <p class="mt-5 text-[10px] font-bold uppercase tracking-wider text-white/50 dark:text-slate-500">Net payroll</p>
-                                <p class="mt-1 text-xl font-extrabold">Rp 428,5 jt</p>
+                                <p class="mt-1 text-xl font-extrabold">Rp 428.5M</p>
                             </div>
                             <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
                                 <i class="pi pi-users text-sky-600 dark:text-sky-300" />
@@ -110,7 +110,7 @@ const features = [
                             <div class="col-span-2 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950">
                                 <div class="flex items-center justify-between">
                                     <p class="text-xs font-bold text-slate-700 dark:text-slate-200">Attendance rate</p>
-                                    <span class="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">96,8%</span>
+                                    <span class="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">96.8%</span>
                                 </div>
                                 <div class="mt-3 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                                     <div class="h-full w-[96.8%] rounded-full bg-emerald-500" />
@@ -139,9 +139,9 @@ const features = [
                 <div class="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                         <p class="text-[11px] font-bold uppercase tracking-[0.18em] text-red-600 dark:text-red-300">Built for operations</p>
-                        <h2 class="mt-2 text-3xl font-extrabold tracking-[-0.04em] text-slate-950 dark:text-white">Fondasi kerja payroll yang lengkap.</h2>
+                        <h2 class="mt-2 text-3xl font-extrabold leading-tight tracking-[-0.02em] text-slate-950 dark:text-white">A complete operating foundation for payroll.</h2>
                     </div>
-                    <p class="max-w-lg text-sm leading-6 text-slate-500 dark:text-slate-400">Setiap modul dirancang untuk mengurangi pekerjaan manual dan menjaga konsistensi data.</p>
+                    <p class="max-w-lg text-sm leading-6 text-slate-500 dark:text-slate-400">Every module is designed to reduce manual work and keep data consistent.</p>
                 </div>
                 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                     <Card v-for="feature in features" :key="feature.title" class="border border-slate-200/80 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80">

@@ -27,6 +27,7 @@ import InputNumber from "primevue/inputnumber";
 import InputText from "primevue/inputtext";
 import Menu from "primevue/menu";
 import Message from "primevue/message";
+import MultiSelect from "primevue/multiselect";
 import Panel from "primevue/panel";
 import ProgressBar from "primevue/progressbar";
 import Select from "primevue/select";
@@ -96,6 +97,7 @@ createInertiaApp({
             .component("InputText", InputText)
             .component("Menu", Menu)
             .component("Message", Message)
+            .component("MultiSelect", MultiSelect)
             .component("Panel", Panel)
             .component("ProgressBar", ProgressBar)
             .component("Select", Select)

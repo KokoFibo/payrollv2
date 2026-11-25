@@ -24,7 +24,7 @@ function submit() {
 
 <template>
     <GuestLayout>
-        <Head title="Login" />
+        <Head title="Sign in" />
 
         <Card class="overflow-hidden border border-white/70 bg-white/90 shadow-[0_30px_80px_-30px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/90">
             <template #content>
@@ -33,11 +33,11 @@ function submit() {
                         <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300">
                             <i class="pi pi-lock text-lg" />
                         </span>
-                        <h2 class="mt-5 text-2xl font-extrabold tracking-[-0.035em] text-slate-950 dark:text-white">
-                            Selamat datang kembali
+                        <h2 class="mt-5 text-2xl font-extrabold leading-tight tracking-[-0.02em] text-slate-950 dark:text-white">
+                            Welcome back
                         </h2>
                         <p class="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-                            Masuk menggunakan akun internal yang sudah terdaftar.
+                            Sign in with your registered internal account.
                         </p>
                     </div>
 
@@ -61,7 +61,7 @@ function submit() {
                                     v-model="form.email"
                                     type="email"
                                     class="h-12 w-full pl-11"
-                                    placeholder="nama@perusahaan.com"
+                                    placeholder="name@company.com"
                                     autocomplete="username"
                                     autofocus
                                     required
@@ -80,7 +80,7 @@ function submit() {
                                     :href="route('password.request')"
                                     class="text-xs font-bold text-red-600 hover:text-red-700 dark:text-red-300"
                                 >
-                                    Lupa password?
+                                    Forgot password?
                                 </Link>
                             </div>
                             <div class="relative">
@@ -90,7 +90,7 @@ function submit() {
                                     v-model="form.password"
                                     :type="showPassword ? 'text' : 'password'"
                                     class="h-12 w-full px-11"
-                                    placeholder="Masukkan password"
+                                    placeholder="Enter your password"
                                     autocomplete="current-password"
                                     required
                                 />
@@ -101,7 +101,7 @@ function submit() {
                                     rounded
                                     severity="secondary"
                                     class="!absolute right-1.5 top-1/2 -translate-y-1/2"
-                                    :aria-label="showPassword ? 'Sembunyikan password' : 'Tampilkan password'"
+                                    :aria-label="showPassword ? 'Hide password' : 'Show password'"
                                     @click="showPassword = !showPassword"
                                 />
                             </div>
@@ -112,12 +112,12 @@ function submit() {
 
                         <label class="flex cursor-pointer items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300">
                             <Checkbox v-model="form.remember" binary />
-                            Ingat perangkat ini
+                            Remember this device
                         </label>
 
                         <Button
                             type="submit"
-                            label="Masuk ke workspace"
+                            label="Sign in to workspace"
                             icon="pi pi-arrow-right"
                             icon-pos="right"
                             class="h-12 w-full"
@@ -129,7 +129,7 @@ function submit() {
                     <div class="mt-7 flex items-start gap-3 rounded-2xl border border-slate-200/80 bg-slate-50 p-3.5 dark:border-slate-800 dark:bg-slate-950/50">
                         <i class="pi pi-shield mt-0.5 text-sm text-slate-400" />
                         <p class="text-[11px] leading-5 text-slate-500 dark:text-slate-400">
-                            Akses dicatat untuk kebutuhan keamanan. Jangan bagikan kredensial atau membuka halaman ini pada perangkat publik.
+                            Access is logged for security purposes. Do not share your credentials or open this page on public devices.
                         </p>
                     </div>
                 </div>

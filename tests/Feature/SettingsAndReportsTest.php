@@ -36,7 +36,7 @@ test('admin can update application settings', function () {
 });
 
 test('reports render analytics for admins', function () {
-    $admin = User::factory()->create(['role' => 5]);
+    $admin = User::factory()->create(['role' => 6]);
     Karyawan::factory()->create([
         'status_karyawan' => KaryawanStatus::Pkwt->value,
         'gaji_pokok' => 4_500_000,
@@ -52,4 +52,10 @@ test('reports render analytics for admins', function () {
             ->where('summary.activeHeadcount', 1)
             ->has('statusBreakdown', 1)
             ->has('departmentBreakdown', 1));
+});
+
+test('reports are forbidden for admin role', function () {
+    $admin = User::factory()->create(['role' => 5]);
+
+    $this->actingAs($admin)->get('/admin/reports')->assertForbidden();
 });

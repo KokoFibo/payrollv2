@@ -8,7 +8,7 @@ use App\Models\User;
 use Inertia\Testing\AssertableInertia as Assert;
 
 test('payroll period calculates employee gross deductions and net salary', function () {
-    $admin = User::factory()->create(['role' => 5]);
+    $admin = User::factory()->create(['role' => 6]);
     Karyawan::factory()->create([
         'status_karyawan' => KaryawanStatus::Pkwt->value,
         'gaji_pokok' => 5_000_000,
@@ -46,7 +46,7 @@ test('payroll period calculates employee gross deductions and net salary', funct
 });
 
 test('payroll period moves from draft to processed and paid', function () {
-    $admin = User::factory()->create(['role' => 5]);
+    $admin = User::factory()->create(['role' => 6]);
     Karyawan::factory()->create(['status_karyawan' => KaryawanStatus::Pkwt->value]);
     $period = PayrollPeriod::factory()->create();
 
@@ -65,7 +65,7 @@ test('payroll period moves from draft to processed and paid', function () {
 });
 
 test('payroll cannot be created without active employees', function () {
-    $admin = User::factory()->create(['role' => 5]);
+    $admin = User::factory()->create(['role' => 6]);
 
     $this->actingAs($admin)
         ->from('/admin/payroll')
@@ -80,8 +80,8 @@ test('payroll cannot be created without active employees', function () {
     $this->assertDatabaseCount('payroll_periods', 0);
 });
 
-test('payroll pages render period details for admins', function () {
-    $admin = User::factory()->create(['role' => 5]);
+test('payroll pages render period details for senior admins', function () {
+    $admin = User::factory()->create(['role' => 6]);
     $period = PayrollPeriod::factory()->create(['name' => 'November Payroll']);
     Karyawan::factory()->create(['status_karyawan' => KaryawanStatus::Pkwt->value]);
 
@@ -93,8 +93,11 @@ test('payroll pages render period details for admins', function () {
             ->where('period.name', 'November Payroll'));
 });
 
-test('payroll forbids non admin roles', function () {
-    $user = User::factory()->create(['role' => 4]);
+test('payroll forbids admin and lower roles', function (int $role) {
+    $user = User::factory()->create(['role' => $role]);
 
     $this->actingAs($user)->get('/admin/payroll')->assertForbidden();
-});
+})->with([
+    'admin' => [5],
+    'supervisor' => [4],
+]);

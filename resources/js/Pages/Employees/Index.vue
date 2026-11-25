@@ -77,7 +77,6 @@ function queryState() {
         directorateId: filters.directorateId ?? "",
         departmentId: filters.departmentId ?? "",
         jabatanId: filters.jabatanId ?? "",
-        etnisId: filters.etnisId ?? "",
         perPage: filters.perPage,
         sortField: filters.sortField,
         sortDirection: filters.sortDirection,
@@ -118,7 +117,6 @@ function resetFilters() {
         directorateId: "",
         departmentId: "",
         jabatanId: "",
-        etnisId: "",
         perPage: 10,
         sortField: "nip",
         sortDirection: "desc",
@@ -295,17 +293,6 @@ function formatDate(value) {
                             option-label="label"
                             option-value="value"
                             placeholder="Semua Jabatan"
-                            filter
-                            show-clear
-                            class="h-11 w-full"
-                            @change="load(true)"
-                        />
-                        <Select
-                            v-model="filters.etnisId"
-                            :options="filterOptions.etnis"
-                            option-label="label"
-                            option-value="value"
-                            placeholder="Semua Etnis"
                             filter
                             show-clear
                             class="h-11 w-full"

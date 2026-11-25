@@ -9,20 +9,52 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class KaryawanMigrationService
 {
-    public const SourceDatabase = 'payrollok';
-
     public const SourceTable = 'karyawans';
 
-    private const SourceQualifiedTable = self::SourceDatabase.'.'.self::SourceTable;
-
     private const TargetTable = 'karyawans';
+
+    /**
+     * @var list<string>
+     */
+    private const TargetMasterTables = [
+        'companies',
+        'directorates',
+        'departments',
+        'jabatans',
+        'job_grades',
+    ];
 
     private const ChunkSize = 250;
 
     private const LegacySourceNipField = 'id_karyawan';
+
+    /**
+     * @var array<string, string>
+     */
+    private const JobGradeNames = [
+        'P1' => 'Non Staff',
+        'P2' => 'Non Staff',
+        'P3' => 'Junior Staff',
+        'P4' => 'Staff',
+        'P5' => 'Senior Staff',
+        'P6' => 'Junior Staff',
+        'P7' => 'Officer',
+        'P8' => 'Senior Officer',
+        'M1' => 'Junior Supervisor',
+        'M2' => 'Supervisor',
+        'M3' => 'Senior Supervisor',
+        'M4' => 'Junior Manager',
+        'M5' => 'Manager',
+        'M6' => 'Senior Manager',
+        'M7' => 'Director',
+        'M8' => 'Senior Director',
+        'M9' => 'Vice President',
+        'M10' => 'Chairman',
+    ];
 
     /**
      * @var array<string, array{target: string|null, status: string, note: string}>
@@ -140,15 +172,15 @@ class KaryawanMigrationService
      */
     public function preview(): array
     {
-        $sourceColumns = $this->columnMetadata(self::SourceDatabase, self::SourceTable);
+        $sourceColumns = $this->columnMetadata($this->sourceDatabase(), self::SourceTable);
         $targetColumns = $this->columnMetadata($this->targetDatabase(), self::TargetTable);
         $mappings = $this->buildFieldMappings($sourceColumns, $targetColumns);
 
         return [
             'source' => [
-                'database' => self::SourceDatabase,
+                'database' => $this->sourceDatabase(),
                 'table' => self::SourceTable,
-                'row_count' => DB::table(self::SourceQualifiedTable)->count(),
+                'row_count' => DB::table($this->sourceTable(self::SourceTable))->count(),
             ],
             'target' => [
                 'database' => $this->targetDatabase(),
@@ -173,18 +205,18 @@ class KaryawanMigrationService
      */
     public function copy(?callable $onProgress = null): array
     {
-        $totalRows = DB::table(self::SourceQualifiedTable)->count();
+        $sourceTable = $this->sourceTable(self::SourceTable);
+        $totalRows = DB::table($sourceTable)->count();
 
-        return DB::transaction(function () use ($onProgress, $totalRows): array {
-            $referenceData = $this->synchronizeReferenceData();
+        return DB::transaction(function () use ($onProgress, $sourceTable, $totalRows): array {
             $existingKaryawans = DB::table(self::TargetTable)
-                ->get(['uuid', 'nip', 'email', 'nomor_rekening_hash']);
+                ->get(['uuid', 'nip']);
 
             $existingByNip = $existingKaryawans
                 ->keyBy(fn (object $karyawan): int => (int) $karyawan->nip)
                 ->all();
-            $emailOwners = $this->uniqueOwners($existingKaryawans, 'email');
-            $accountOwners = $this->uniqueOwners($existingKaryawans, 'nomor_rekening_hash');
+            $deletedRows = DB::table(self::TargetTable)->delete();
+            $referenceData = $this->synchronizeReferenceData();
             $applicationEmails = User::query()
                 ->whereNotNull('email')
                 ->pluck('email')
@@ -194,6 +226,7 @@ class KaryawanMigrationService
             $seenAccounts = [];
             $statistics = [
                 'source_rows' => 0,
+                'deleted_rows' => $deletedRows,
                 'inserted' => 0,
                 'updated' => 0,
                 'user_rows_skipped' => 0,
@@ -210,7 +243,7 @@ class KaryawanMigrationService
                 'Master data referensi selesai',
             );
 
-            DB::table(self::SourceQualifiedTable)
+            DB::table($sourceTable)
                 ->orderBy(self::LegacySourceNipField)
                 ->chunkById(self::ChunkSize, function ($sourceKaryawans) use (
                     &$processedRows,
@@ -218,8 +251,6 @@ class KaryawanMigrationService
                     &$seenEmails,
                     &$seenAccounts,
                     $existingByNip,
-                    $emailOwners,
-                    $accountOwners,
                     $applicationEmails,
                     $referenceData,
                     $totalRows,
@@ -250,14 +281,14 @@ class KaryawanMigrationService
                         $row['email'] = $this->resolveUniqueValue(
                             value: $source['email'] ?? null,
                             nip: $nip,
-                            owners: $emailOwners,
+                            owners: [],
                             seen: $seenEmails,
                         );
                         $account = $this->stringOrNull($source['nomor_rekening'] ?? null);
                         $row['nomor_rekening_hash'] = $this->resolveUniqueValue(
                             value: karyawan_blind_index($account),
                             nip: $nip,
-                            owners: $accountOwners,
+                            owners: [],
                             seen: $seenAccounts,
                         );
                         $row['nomor_rekening'] = $row['nomor_rekening_hash'] === null ? null : $account;
@@ -274,18 +305,14 @@ class KaryawanMigrationService
                             $statistics['directorates_cleared']++;
                         }
 
-                        $existing === null ? $statistics['inserted']++ : $statistics['updated']++;
+                        $statistics['inserted']++;
                         $payload[] = $this->encryptSensitiveFields($row);
                     }
 
                     $processedRows += count($sourceKaryawans);
 
                     if ($payload !== []) {
-                        DB::table(self::TargetTable)->upsert(
-                            $payload,
-                            ['nip'],
-                            $this->updateColumns($payload[0]),
-                        );
+                        DB::table(self::TargetTable)->insert($payload);
                     }
 
                     $onProgress?->__invoke(
@@ -299,6 +326,88 @@ class KaryawanMigrationService
             return [
                 'statistics' => $statistics,
                 'reference_data' => $referenceData['summary'],
+            ];
+        }, attempts: 3);
+    }
+
+    /**
+     * @return array{
+     *     statistics: list<array<string, int|string>>,
+     *     totals: array{deleted_rows: int, source_rows: int, created_rows: int, updated_rows: int, skipped_rows: int}
+     * }
+     */
+    public function copyMasterData(): array
+    {
+        return DB::transaction(function (): array {
+            $deletedRows = $this->clearTargetMasterData();
+            $statistics = [
+                $this->masterDataResult(
+                    key: 'company',
+                    label: 'Company',
+                    sourceTable: 'companies',
+                    targetTable: 'companies',
+                    result: $this->synchronizeNamedReference(
+                        sourceTable: 'companies',
+                        sourceNameColumn: 'company_name',
+                        targetTable: 'companies',
+                    ),
+                    deletedRows: $deletedRows['companies'] ?? 0,
+                ),
+                $this->masterDataResult(
+                    key: 'directorate',
+                    label: 'Directorate',
+                    sourceTable: 'placements',
+                    targetTable: 'directorates',
+                    result: $this->synchronizeNamedReference(
+                        sourceTable: 'placements',
+                        sourceNameColumn: 'placement_name',
+                        targetTable: 'directorates',
+                    ),
+                    deletedRows: $deletedRows['directorates'] ?? 0,
+                ),
+                $this->masterDataResult(
+                    key: 'department',
+                    label: 'Department',
+                    sourceTable: 'departments',
+                    targetTable: 'departments',
+                    result: $this->synchronizeNamedReference(
+                        sourceTable: 'departments',
+                        sourceNameColumn: 'nama_department',
+                        targetTable: 'departments',
+                    ),
+                    deletedRows: $deletedRows['departments'] ?? 0,
+                ),
+                $this->masterDataResult(
+                    key: 'jabatan',
+                    label: 'Jabatan',
+                    sourceTable: 'jabatans',
+                    targetTable: 'jabatans',
+                    result: $this->synchronizeNamedReference(
+                        sourceTable: 'jabatans',
+                        sourceNameColumn: 'nama_jabatan',
+                        targetTable: 'jabatans',
+                    ),
+                    deletedRows: $deletedRows['jabatans'] ?? 0,
+                ),
+                $this->masterDataResult(
+                    key: 'job_grade',
+                    label: 'Job Grade',
+                    sourceTable: $this->jobGradeSourceLabel(),
+                    targetTable: 'job_grades',
+                    result: $this->synchronizeJobGrades(),
+                    deletedRows: $deletedRows['job_grades'] ?? 0,
+                ),
+            ];
+
+            return [
+                'statistics' => $statistics,
+                'totals' => [
+                    'deleted_rows' => array_sum(array_column($statistics, 'deleted_rows')),
+                    'source_rows' => array_sum(array_column($statistics, 'source_rows')),
+                    'created_rows' => array_sum(array_column($statistics, 'created_rows')),
+                    'updated_rows' => array_sum(array_column($statistics, 'updated_rows')),
+                    'skipped_rows' => array_sum(array_column($statistics, 'skipped_rows')),
+                ],
             ];
         }, attempts: 3);
     }
@@ -434,6 +543,22 @@ class KaryawanMigrationService
         return isset($applicationEmails[Str::lower(trim($email))]);
     }
 
+    public function sourceDatabase(): string
+    {
+        $database = trim((string) config('database.source_database'));
+
+        if ($database === '') {
+            throw new RuntimeException('DB_SOURCE_DATABASE belum dikonfigurasi.');
+        }
+
+        return $database;
+    }
+
+    private function sourceTable(string $table): string
+    {
+        return $this->sourceDatabase().'.'.$table;
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -464,43 +589,60 @@ class KaryawanMigrationService
         return (string) DB::connection()->getDatabaseName();
     }
 
+    private function sourceTableExists(string $table): bool
+    {
+        return DB::table('information_schema.TABLES')
+            ->where('TABLE_SCHEMA', $this->sourceDatabase())
+            ->where('TABLE_NAME', $table)
+            ->exists();
+    }
+
+    private function sourceJobGradeCount(): int
+    {
+        if ($this->sourceTableExists('jobgrades')) {
+            return DB::table($this->sourceTable('jobgrades'))->count();
+        }
+
+        return DB::table($this->sourceTable(self::SourceTable))
+            ->whereNotNull('level_jabatan')
+            ->where('level_jabatan', '!=', '')
+            ->distinct()
+            ->count('level_jabatan');
+    }
+
+    private function jobGradeSourceLabel(): string
+    {
+        return $this->sourceTableExists('jobgrades')
+            ? 'jobgrades'
+            : 'karyawans.level_jabatan';
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
     private function dataQuality(): array
     {
-        $uniqueValues = (array) DB::selectOne(
-            <<<'SQL'
-                SELECT
-                    SUM(CASE WHEN email IS NULL OR TRIM(email) = '' THEN 1 ELSE 0 END) AS empty_email_rows,
-                    COUNT(*) - COUNT(DISTINCT NULLIF(LOWER(TRIM(email)), '')) AS duplicate_email_rows,
-                    SUM(CASE WHEN nomor_rekening IS NULL OR TRIM(nomor_rekening) = '' THEN 1 ELSE 0 END) AS empty_account_rows,
-                    COUNT(*) - COUNT(DISTINCT NULLIF(LOWER(TRIM(nomor_rekening)), '')) AS duplicate_account_rows
-                FROM payrollok.karyawans
-            SQL,
-        );
-        $fileIds = (array) DB::selectOne(
-            <<<'SQL'
-                SELECT
-                    SUM(CASE WHEN id_file_karyawan IS NULL OR TRIM(id_file_karyawan) = '' THEN 1 ELSE 0 END) AS empty_file_id_rows,
-                    SUM(CASE WHEN id_file_karyawan IS NOT NULL AND TRIM(id_file_karyawan) <> '' AND id_file_karyawan NOT REGEXP '^[0-9]+$' THEN 1 ELSE 0 END) AS non_numeric_file_id_rows
-                FROM payrollok.karyawans
-            SQL,
-        );
-        $referenceProblems = (array) DB::selectOne(
-            <<<'SQL'
-                SELECT
-                    SUM(CASE WHEN k.company_id IS NOT NULL AND c.id IS NULL THEN 1 ELSE 0 END) AS missing_company_rows,
-                    SUM(CASE WHEN k.placement_id IS NOT NULL AND p.id IS NULL THEN 1 ELSE 0 END) AS missing_directorate_rows,
-                    SUM(CASE WHEN k.department_id IS NOT NULL AND d.id IS NULL THEN 1 ELSE 0 END) AS missing_department_rows,
-                    SUM(CASE WHEN k.jabatan_id IS NOT NULL AND j.id IS NULL THEN 1 ELSE 0 END) AS missing_jabatan_rows
-                FROM payrollok.karyawans k
-                LEFT JOIN payrollok.companies c ON c.id = k.company_id
-                LEFT JOIN payrollok.placements p ON p.id = k.placement_id
-                LEFT JOIN payrollok.departments d ON d.id = k.department_id
-                LEFT JOIN payrollok.jabatans j ON j.id = k.jabatan_id
-            SQL,
-        );
+        $sourceKaryawans = $this->sourceTable(self::SourceTable);
+        $uniqueValues = (array) DB::table($sourceKaryawans)
+            ->selectRaw("SUM(CASE WHEN email IS NULL OR TRIM(email) = '' THEN 1 ELSE 0 END) AS empty_email_rows")
+            ->selectRaw("COUNT(*) - COUNT(DISTINCT NULLIF(LOWER(TRIM(email)), '')) AS duplicate_email_rows")
+            ->selectRaw("SUM(CASE WHEN nomor_rekening IS NULL OR TRIM(nomor_rekening) = '' THEN 1 ELSE 0 END) AS empty_account_rows")
+            ->selectRaw("COUNT(*) - COUNT(DISTINCT NULLIF(LOWER(TRIM(nomor_rekening)), '')) AS duplicate_account_rows")
+            ->first();
+        $fileIds = (array) DB::table($sourceKaryawans)
+            ->selectRaw("SUM(CASE WHEN id_file_karyawan IS NULL OR TRIM(id_file_karyawan) = '' THEN 1 ELSE 0 END) AS empty_file_id_rows")
+            ->selectRaw("SUM(CASE WHEN id_file_karyawan IS NOT NULL AND TRIM(id_file_karyawan) <> '' AND id_file_karyawan NOT REGEXP '^[0-9]+$' THEN 1 ELSE 0 END) AS non_numeric_file_id_rows")
+            ->first();
+        $referenceProblems = (array) DB::table($sourceKaryawans, 'k')
+            ->leftJoin($this->sourceTable('companies').' as c', 'c.id', '=', 'k.company_id')
+            ->leftJoin($this->sourceTable('placements').' as p', 'p.id', '=', 'k.placement_id')
+            ->leftJoin($this->sourceTable('departments').' as d', 'd.id', '=', 'k.department_id')
+            ->leftJoin($this->sourceTable('jabatans').' as j', 'j.id', '=', 'k.jabatan_id')
+            ->selectRaw('SUM(CASE WHEN k.company_id IS NOT NULL AND c.id IS NULL THEN 1 ELSE 0 END) AS missing_company_rows')
+            ->selectRaw('SUM(CASE WHEN k.placement_id IS NOT NULL AND p.id IS NULL THEN 1 ELSE 0 END) AS missing_directorate_rows')
+            ->selectRaw('SUM(CASE WHEN k.department_id IS NOT NULL AND d.id IS NULL THEN 1 ELSE 0 END) AS missing_department_rows')
+            ->selectRaw('SUM(CASE WHEN k.jabatan_id IS NOT NULL AND j.id IS NULL THEN 1 ELSE 0 END) AS missing_jabatan_rows')
+            ->first();
 
         $metrics = array_map(
             fn (mixed $value): int => (int) $value,
@@ -554,16 +696,22 @@ class KaryawanMigrationService
         ];
 
         return array_map(function (array $reference): array {
-            $sourceCount = $reference['key'] === 'etnis'
-                ? DB::table(self::SourceQualifiedTable)
+            $sourceCount = match ($reference['key']) {
+                'etnis' => DB::table($this->sourceTable(self::SourceTable))
                     ->whereNotNull('etnis')
                     ->where('etnis', '!=', '')
                     ->distinct()
-                    ->count('etnis')
-                : DB::table(self::SourceDatabase.'.'.$reference['source_table'])->count();
+                    ->count('etnis'),
+                'job_grade' => $this->sourceJobGradeCount(),
+                default => DB::table($this->sourceTable($reference['source_table']))->count(),
+            };
+            $sourceTable = $reference['key'] === 'job_grade'
+                ? $this->jobGradeSourceLabel()
+                : $reference['source_table'];
 
             return [
                 ...$reference,
+                'source_table' => $this->sourceTable($sourceTable),
                 'source_count' => $sourceCount,
                 'target_count' => DB::table($reference['target_table'])->count(),
             ];
@@ -620,34 +768,76 @@ class KaryawanMigrationService
     }
 
     /**
-     * @return array{source_count: int, created_count: int, maps: array<int|string, int>}
+     * @return array<string, int>
+     */
+    private function clearTargetMasterData(): array
+    {
+        $deletedRows = [];
+
+        foreach (self::TargetMasterTables as $table) {
+            $deletedRows[$table] = DB::table($table)->delete();
+        }
+
+        return $deletedRows;
+    }
+
+    /**
+     * @param  array{source_count: int, created_count: int, updated_count: int, skipped_count: int, maps: array<int|string, int>}  $result
+     * @return array<string, int|string>
+     */
+    private function masterDataResult(
+        string $key,
+        string $label,
+        string $sourceTable,
+        string $targetTable,
+        array $result,
+        int $deletedRows,
+    ): array {
+        return [
+            'key' => $key,
+            'label' => $label,
+            'source_table' => $this->sourceTable($sourceTable),
+            'target_table' => $targetTable,
+            'deleted_rows' => $deletedRows,
+            'source_rows' => $result['source_count'],
+            'created_rows' => $result['created_count'],
+            'updated_rows' => $result['updated_count'],
+            'skipped_rows' => $result['skipped_count'],
+            'target_rows' => DB::table($targetTable)->count(),
+        ];
+    }
+
+    /**
+     * @return array{source_count: int, created_count: int, updated_count: int, skipped_count: int, maps: array<int|string, int>}
      */
     private function synchronizeNamedReference(
         string $sourceTable,
         string $sourceNameColumn,
         string $targetTable,
     ): array {
-        $sourceRows = DB::table(self::SourceDatabase.'.'.$sourceTable)
+        $sourceRows = DB::table($this->sourceTable($sourceTable))
             ->select('id', "{$sourceNameColumn} as name", 'created_at', 'updated_at')
             ->orderBy('id')
             ->get();
         $existingNames = $this->targetIdsByName($targetTable);
+        $validRows = $sourceRows
+            ->map(function (object $sourceRow): object {
+                $sourceRow->name = trim((string) $sourceRow->name);
+
+                return $sourceRow;
+            })
+            ->filter(fn (object $sourceRow): bool => $sourceRow->name !== '')
+            ->unique('name')
+            ->values();
+        $createdCount = $validRows
+            ->reject(fn (object $sourceRow): bool => isset($existingNames[$sourceRow->name]))
+            ->count();
+        $updatedCount = $validRows->count() - $createdCount;
         $payload = [];
-        $createdCount = 0;
 
-        foreach ($sourceRows as $sourceRow) {
-            $name = trim((string) $sourceRow->name);
-
-            if ($name === '') {
-                continue;
-            }
-
-            if (! isset($existingNames[$name])) {
-                $createdCount++;
-            }
-
+        foreach ($validRows as $sourceRow) {
             $payload[] = [
-                'name' => $name,
+                'name' => $sourceRow->name,
                 'created_at' => $sourceRow->created_at ?: now()->toDateTimeString(),
                 'updated_at' => $sourceRow->updated_at ?: now()->toDateTimeString(),
             ];
@@ -671,28 +861,37 @@ class KaryawanMigrationService
         return [
             'source_count' => $sourceRows->count(),
             'created_count' => $createdCount,
+            'updated_count' => $updatedCount,
+            'skipped_count' => $sourceRows->count() - $validRows->count(),
             'maps' => $maps,
         ];
     }
 
     /**
-     * @return array{source_count: int, created_count: int, maps: array<int|string, int>}
+     * @return array{source_count: int, created_count: int, updated_count: int, skipped_count: int, maps: array<int|string, int>}
      */
     private function synchronizeJobGrades(): array
     {
-        $sourceRows = DB::table(self::SourceDatabase.'.jobgrades')
+        if (! $this->sourceTableExists('jobgrades')) {
+            return $this->synchronizeJobGradesFromLevelValues();
+        }
+
+        $sourceRows = DB::table($this->sourceTable('jobgrades'))
             ->select('id', 'grade', 'grade_name', 'created_at', 'updated_at')
             ->orderBy('id')
             ->get();
         $existingGrades = DB::table('job_grades')->pluck('id', 'grade')->all();
+        $validRows = $sourceRows
+            ->filter(fn (object $sourceRow): bool => filled($sourceRow->grade))
+            ->unique('grade')
+            ->values();
+        $createdCount = $validRows
+            ->reject(fn (object $sourceRow): bool => isset($existingGrades[$sourceRow->grade]))
+            ->count();
+        $updatedCount = $validRows->count() - $createdCount;
         $payload = [];
-        $createdCount = 0;
 
-        foreach ($sourceRows as $sourceRow) {
-            if (! isset($existingGrades[$sourceRow->grade])) {
-                $createdCount++;
-            }
-
+        foreach ($validRows as $sourceRow) {
             $payload[] = [
                 'grade' => $sourceRow->grade,
                 'grade_name' => $sourceRow->grade_name,
@@ -717,6 +916,56 @@ class KaryawanMigrationService
         return [
             'source_count' => $sourceRows->count(),
             'created_count' => $createdCount,
+            'updated_count' => $updatedCount,
+            'skipped_count' => $sourceRows->count() - $validRows->count(),
+            'maps' => $maps,
+        ];
+    }
+
+    /**
+     * @return array{source_count: int, created_count: int, updated_count: int, skipped_count: int, maps: array<int|string, int>}
+     */
+    private function synchronizeJobGradesFromLevelValues(): array
+    {
+        $sourceValues = DB::table($this->sourceTable(self::SourceTable))
+            ->whereNotNull('level_jabatan')
+            ->where('level_jabatan', '!=', '')
+            ->distinct()
+            ->orderBy('level_jabatan')
+            ->pluck('level_jabatan')
+            ->map(fn (mixed $value): string => trim((string) $value))
+            ->filter()
+            ->unique()
+            ->values();
+        $existingGrades = DB::table('job_grades')->pluck('id', 'grade')->all();
+        $createdCount = $sourceValues
+            ->reject(fn (string $grade): bool => isset($existingGrades[$grade]))
+            ->count();
+        $updatedCount = $sourceValues->count() - $createdCount;
+        $payload = $sourceValues
+            ->map(fn (string $grade): array => [
+                'grade' => $grade,
+                'grade_name' => self::JobGradeNames[$grade] ?? $grade,
+                'created_at' => now()->toDateTimeString(),
+                'updated_at' => now()->toDateTimeString(),
+            ])
+            ->all();
+
+        if ($payload !== []) {
+            DB::table('job_grades')->upsert($payload, ['grade'], ['grade_name', 'updated_at']);
+        }
+
+        $targetIdsByGrade = DB::table('job_grades')->pluck('id', 'grade')->all();
+        $maps = $sourceValues
+            ->filter(fn (string $grade): bool => isset($targetIdsByGrade[$grade]))
+            ->mapWithKeys(fn (string $grade): array => [$grade => (int) $targetIdsByGrade[$grade]])
+            ->all();
+
+        return [
+            'source_count' => $sourceValues->count(),
+            'created_count' => $createdCount,
+            'updated_count' => $updatedCount,
+            'skipped_count' => 0,
             'maps' => $maps,
         ];
     }
@@ -726,7 +975,7 @@ class KaryawanMigrationService
      */
     private function synchronizeEtnis(): array
     {
-        $sourceNames = DB::table(self::SourceQualifiedTable)
+        $sourceNames = DB::table($this->sourceTable(self::SourceTable))
             ->whereNotNull('etnis')
             ->where('etnis', '!=', '')
             ->distinct()
@@ -820,30 +1069,6 @@ class KaryawanMigrationService
      * @param  Collection<int, object>  $karyawans
      * @return array<string, int|string>
      */
-    private function uniqueOwners($karyawans, string $field): array
-    {
-        $owners = [];
-
-        foreach ($karyawans as $karyawan) {
-            $value = $this->stringOrNull($karyawan->{$field} ?? null);
-
-            if ($value !== null) {
-                $owners[Str::lower($value)] = $karyawan->nip;
-            }
-        }
-
-        return $owners;
-    }
-
-    /**
-     * @param  array<string, mixed>  $row
-     * @return list<string>
-     */
-    private function updateColumns(array $row): array
-    {
-        return array_values(array_diff(array_keys($row), ['id', 'uuid', 'nip', 'created_at']));
-    }
-
     /**
      * @param  array<string, mixed>  $row
      * @return array<string, mixed>
