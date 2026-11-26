@@ -7,6 +7,11 @@ use Carbon\CarbonImmutable;
 
 class SpecialWorkScheduleResolver
 {
+    /**
+     * @var array<string, SpecialWorkSchedule|null>
+     */
+    private array $cache = [];
+
     public function findFor(
         string $profile,
         string $dayType,
@@ -16,7 +21,21 @@ class SpecialWorkScheduleResolver
         ?int $directorateId = null,
         ?int $departmentId = null,
     ): ?SpecialWorkSchedule {
-        return SpecialWorkSchedule::query()
+        $cacheKey = implode(':', [
+            $attendanceDate->toDateString(),
+            $profile,
+            $dayType,
+            $shift,
+            $companyId ?? '-',
+            $directorateId ?? '-',
+            $departmentId ?? '-',
+        ]);
+
+        if (array_key_exists($cacheKey, $this->cache)) {
+            return $this->cache[$cacheKey];
+        }
+
+        return $this->cache[$cacheKey] = SpecialWorkSchedule::query()
             ->whereDate('starts_on', '<=', $attendanceDate->toDateString())
             ->whereDate('ends_on', '>=', $attendanceDate->toDateString())
             ->where(function ($query) use ($companyId): void {

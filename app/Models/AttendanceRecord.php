@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'status',
     'first_in',
     'first_out',
+    'first_out_day_offset',
     'second_in',
     'second_out',
     'overtime_in',
@@ -48,6 +49,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'has_duplicate_punch',
     'requires_review',
     'comparison_notes',
+    'review_resolved_at',
+    'review_resolved_by',
+    'review_resolution_note',
 ])]
 class AttendanceRecord extends Model
 {
@@ -67,6 +71,7 @@ class AttendanceRecord extends Model
     {
         return [
             'attendance_date' => 'date',
+            'first_out_day_offset' => 'integer',
             'second_in_day_offset' => 'integer',
             'second_out_day_offset' => 'integer',
             'overtime_in_day_offset' => 'integer',
@@ -88,6 +93,7 @@ class AttendanceRecord extends Model
             'has_duplicate_punch' => 'boolean',
             'requires_review' => 'boolean',
             'is_holiday_pay' => 'boolean',
+            'review_resolved_at' => 'datetime',
         ];
     }
 
@@ -99,6 +105,11 @@ class AttendanceRecord extends Model
     public function recordedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'recorded_by');
+    }
+
+    public function reviewResolvedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'review_resolved_by');
     }
 
     public function attendanceImport(): BelongsTo

@@ -7,7 +7,10 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-#[Fillable(['admin_salary_limit'])]
+#[Fillable([
+    'admin_salary_limit',
+    'attendance_tolerance_minutes',
+])]
 class AdminVisibilitySetting extends Model
 {
     /** @use HasFactory<AdminVisibilitySettingFactory> */
@@ -17,6 +20,7 @@ class AdminVisibilitySetting extends Model
     {
         return [
             'admin_salary_limit' => 'integer',
+            'attendance_tolerance_minutes' => 'integer',
         ];
     }
 }

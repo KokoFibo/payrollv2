@@ -28,12 +28,16 @@ class AttendanceImportController extends Controller
             $message .= " {$import->missing_punch_count} punch tidak lengkap.";
         }
 
-        return back()->with('toast', [
-            'type' => $import->unmatched_employee_count > 0 || $import->missing_punch_count > 0
-                ? 'warning'
-                : 'success',
-            'title' => 'Import absensi selesai',
-            'message' => $message,
-        ]);
+        return redirect()
+            ->route('admin.attendance.index', [
+                'date' => $import->attendance_date->toDateString(),
+            ])
+            ->with('toast', [
+                'type' => $import->unmatched_employee_count > 0 || $import->missing_punch_count > 0
+                    ? 'warning'
+                    : 'success',
+                'title' => 'Import absensi selesai',
+                'message' => $message,
+            ]);
     }
 }

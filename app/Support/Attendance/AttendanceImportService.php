@@ -10,7 +10,6 @@ use DomainException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AttendanceImportService
@@ -19,6 +18,7 @@ class AttendanceImportService
         private AttendanceWorkbookReader $workbookReader,
         private AttendanceScheduleResolver $scheduleResolver,
         private AttendanceTimeCalculator $timeCalculator,
+        private AttendanceLatenessCalculator $latenessCalculator,
     ) {}
 
     public function import(UploadedFile $file, int $importedBy): AttendanceImport
@@ -41,6 +41,11 @@ class AttendanceImportService
             ]);
         }
 
+        $existingRecords = AttendanceRecord::query()
+            ->where('attendance_date', $workbook['attendance_date']->toDateString())
+            ->whereIn('karyawan_id', $employees->modelKeys())
+            ->get()
+            ->keyBy('karyawan_id');
         $summaries = [];
         $unmatchedUserIds = [];
         $duplicatePunchCount = 0;
@@ -58,7 +63,17 @@ class AttendanceImportService
                 continue;
             }
 
-            $punches = $block['punches'];
+            $sourcePunches = $block['punches'];
+            $schedule = $this->scheduleResolver->resolve(
+                $karyawan,
+                $workbook['attendance_date'],
+                $sourcePunches[0]['punched_at'],
+            );
+            $punches = $this->normalizeNightShiftPunches(
+                $sourcePunches,
+                $workbook['attendance_date'],
+                $schedule,
+            );
             usort($punches, function (array $left, array $right): int {
                 return [$left['punched_at']->getTimestamp(), $left['sequence']]
                     <=> [$right['punched_at']->getTimestamp(), $right['sequence']];
@@ -67,39 +82,58 @@ class AttendanceImportService
             $clockPunches = array_slice($effectivePunches, 0, 6);
             $firstPunch = $clockPunches[0]['punched_at'];
             $lastPunch = $clockPunches[array_key_last($clockPunches)]['punched_at'];
-            $schedule = $this->scheduleResolver->resolve(
-                $karyawan,
-                $workbook['attendance_date'],
-                $firstPunch,
+            $slotPunches = $this->clockSlotPunches(
+                $effectivePunches,
+                $schedule,
             );
-            $slotPunches = $this->clockSlotPunches($clockPunches, $schedule);
             $timeSummary = $this->timeCalculator->calculate(
                 $schedule,
                 array_values($slotPunches),
             );
-            $lateMinutes = max(
-                0,
-                $this->minuteDifference($schedule->expectedCheckIn, $firstPunch),
+            $lateness = $this->latenessCalculator->calculate(
+                $schedule,
+                $slotPunches['first_in']['punched_at'] ?? null,
+                $slotPunches['first_out']['punched_at'] ?? null,
+                $slotPunches['second_in']['punched_at'] ?? null,
+                $slotPunches['second_out']['punched_at'] ?? null,
             );
-            $isLate = $lateMinutes > (int) config('attendance.tolerance_minutes', 3);
+            $lateMinutes = $lateness['total_minutes'];
+            $isLate = $lateness['is_late'];
             $duplicateCount = max(0, count($punches) - count($effectivePunches));
-            $hasMissingPunch = count($clockPunches) < $schedule->expectedPunchCount;
+            $hasMissingPunch = ! $this->timeCalculator->hasCompleteEntryAndExit(
+                array_values($slotPunches),
+            );
             $hasDuplicatePunch = $duplicateCount > 0;
-            $ignoredPunchCount = max(0, count($effectivePunches) - 6);
+            $ignoredPunchCount = max(
+                0,
+                count($effectivePunches) - count(array_filter($slotPunches)),
+            );
+            $securityCheckoutPunchCount = $this->securityCheckoutPunchCount(
+                $effectivePunches,
+                $schedule,
+            );
             $checkOutDifference = $this->minuteDifference($schedule->expectedCheckOut, $lastPunch);
             $earlyLeaveMinutes = ! $hasMissingPunch ? max(0, -$checkOutDifference) : 0;
-            $latePenaltyHours = $isLate && $this->isHourlyWorker($karyawan)
-                ? (int) ceil($lateMinutes / 60)
+            $latePenaltyHours = $lateness['penalty_hours'] > 0
+                ? $lateness['penalty_hours']
                 : null;
-            $requiresReview = $hasMissingPunch || $timeSummary['requires_review'];
+            $timeSummary = $this->timeCalculator->deductWorkHours(
+                $timeSummary,
+                $lateness['penalty_hours'],
+            );
+            $existingRecord = $existingRecords->get($karyawan->id);
+            $preservedReview = ($existingRecord?->requires_review ?? false)
+                && ! $hasMissingPunch
+                && ! $timeSummary['requires_review'];
+            $requiresReview = $preservedReview
+                || $hasMissingPunch
+                || $securityCheckoutPunchCount >= 2
+                || $timeSummary['requires_review'];
             $lastOutDayOffset = (int) $workbook['attendance_date']
                 ->diffInDays($lastPunch->startOfDay());
             $notes = $this->comparisonNotes(
-                $karyawan,
                 $schedule,
-                $lateMinutes,
-                $isLate,
-                $latePenaltyHours,
+                $lateness['notes'],
                 $duplicateCount,
                 $ignoredPunchCount,
                 count($clockPunches),
@@ -107,6 +141,14 @@ class AttendanceImportService
                 $earlyLeaveMinutes,
                 $timeSummary['notes'],
             );
+
+            if ($preservedReview) {
+                $notes[] = 'Status review dipertahankan sampai admin menghapusnya secara manual.';
+            }
+
+            if ($securityCheckoutPunchCount >= 2) {
+                $notes[] = "{$securityCheckoutPunchCount} punch berada di sekitar jam pulang Security; checkout perlu ditinjau.";
+            }
 
             $summaries[] = [
                 'source_user_id' => (string) $block['source_user_id'],
@@ -117,6 +159,7 @@ class AttendanceImportService
                 'schedule_profile' => $schedule->profile,
                 'first_in' => $this->punchTime($slotPunches, 'first_in'),
                 'first_out' => $this->punchTime($slotPunches, 'first_out'),
+                'first_out_day_offset' => $this->punchDayOffset($slotPunches, 'first_out'),
                 'second_in' => $this->punchTime($slotPunches, 'second_in'),
                 'second_out' => $this->punchTime($slotPunches, 'second_out'),
                 'overtime_in' => $this->punchTime($slotPunches, 'overtime_in'),
@@ -143,6 +186,15 @@ class AttendanceImportService
                 'has_missing_punch' => $hasMissingPunch,
                 'has_duplicate_punch' => $hasDuplicatePunch,
                 'requires_review' => $requiresReview,
+                'review_resolved_at' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolved_at,
+                'review_resolved_by' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolved_by,
+                'review_resolution_note' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolution_note,
                 'comparison_notes' => $notes === [] ? null : implode(' ', $notes),
                 'recorded_by' => $importedBy,
                 'calendar_override_id' => $schedule->calendarOverrideId,
@@ -218,6 +270,7 @@ class AttendanceImportService
                     'schedule_profile',
                     'first_in',
                     'first_out',
+                    'first_out_day_offset',
                     'second_in',
                     'second_out',
                     'overtime_in',
@@ -244,6 +297,9 @@ class AttendanceImportService
                     'has_missing_punch',
                     'has_duplicate_punch',
                     'requires_review',
+                    'review_resolved_at',
+                    'review_resolved_by',
+                    'review_resolution_note',
                     'comparison_notes',
                     'recorded_by',
                     'calendar_override_id',
@@ -254,6 +310,43 @@ class AttendanceImportService
 
             return $import->refresh();
         });
+    }
+
+    /**
+     * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $punches
+     * @return list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>
+     */
+    private function normalizeNightShiftPunches(
+        array $punches,
+        CarbonImmutable $attendanceDate,
+        AttendanceSchedule $schedule,
+    ): array {
+        if ($schedule->shift !== 'night') {
+            return $punches;
+        }
+
+        $previousPunch = null;
+
+        foreach ($punches as &$punch) {
+            $punchedAt = $attendanceDate
+                ->addDays($punch['is_next_day'] ? 1 : 0)
+                ->setTime($punch['punched_at']->hour, $punch['punched_at']->minute);
+
+            if (
+                $previousPunch !== null
+                && ! $punch['is_next_day']
+                && $punchedAt->lessThan($previousPunch)
+            ) {
+                $punchedAt = $punchedAt->addDay();
+            }
+
+            $punch['punched_at'] = $punchedAt;
+            $punch['is_next_day'] = $punchedAt->toDateString() !== $attendanceDate->toDateString();
+            $previousPunch = $punchedAt;
+        }
+        unset($punch);
+
+        return $punches;
     }
 
     /**
@@ -283,7 +376,7 @@ class AttendanceImportService
     }
 
     /**
-     * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $punches
+     * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $effectivePunches
      * @return list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>
      */
     private function effectivePunches(array $punches): array
@@ -316,13 +409,37 @@ class AttendanceImportService
      *     overtime_out: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null
      * }
      */
-    private function clockSlotPunches(array $punches, AttendanceSchedule $schedule): array
-    {
+    private function clockSlotPunches(
+        array $effectivePunches,
+        AttendanceSchedule $schedule,
+    ): array {
+        if ($schedule->profile === 'security' && $schedule->expectedPunchCount <= 2) {
+            return [
+                'first_in' => $effectivePunches[0] ?? null,
+                'first_out' => null,
+                'second_in' => null,
+                'second_out' => count($effectivePunches) >= 2
+                    ? $effectivePunches[array_key_last($effectivePunches)]
+                    : null,
+                'overtime_in' => null,
+                'overtime_out' => null,
+            ];
+        }
+
+        $breakWindowSlots = $this->breakWindowClockSlots($effectivePunches, $schedule);
+
+        if ($breakWindowSlots !== null) {
+            return $breakWindowSlots;
+        }
+
+        $punches = array_slice($effectivePunches, 0, 6);
+        $punchCount = count($punches);
         $slots = [
             'first_in' => $punches[0] ?? null,
-            'first_out' => $punches[1] ?? null,
-            'second_in' => $punches[2] ?? null,
-            'second_out' => null,
+            'first_out' => $punchCount >= 3 ? $punches[1] : null,
+            'second_in' => $punchCount >= 3 ? $punches[2] : null,
+            // Two punches represent entry and final exit; there is no lunch-out evidence.
+            'second_out' => $punchCount === 2 ? $punches[1] : null,
             'overtime_in' => null,
             'overtime_out' => null,
         ];
@@ -356,6 +473,158 @@ class AttendanceImportService
      * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $punches
      * @return array{
      *     first_in: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
+     *     first_out: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
+     *     second_in: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
+     *     second_out: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
+     *     overtime_in: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
+     *     overtime_out: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null
+     * }|null
+     */
+    private function breakWindowClockSlots(
+        array $punches,
+        AttendanceSchedule $schedule,
+    ): ?array {
+        if (
+            count($punches) < 3
+            || $schedule->breakWindowStart === null
+            || $schedule->breakWindowEnd === null
+        ) {
+            return null;
+        }
+
+        $breakCandidates = [];
+
+        foreach (array_slice($punches, 1, null, true) as $index => $punch) {
+            if (! $this->isWithinBreakWindow(
+                $punch['punched_at'],
+                $schedule->breakWindowStart,
+                $schedule->breakWindowEnd,
+            )) {
+                continue;
+            }
+
+            $breakCandidates[$punch['punched_at']->format('Y-m-d H:i')] = [
+                'index' => $index,
+                'punched_at' => $punch['punched_at'],
+            ];
+        }
+
+        $breakCandidates = array_values($breakCandidates);
+
+        if (count($breakCandidates) < 2) {
+            return null;
+        }
+
+        $bestPair = null;
+
+        for ($index = 1; $index < count($breakCandidates); $index++) {
+            $previous = $breakCandidates[$index - 1];
+            $current = $breakCandidates[$index];
+            $gapMinutes = (int) round(
+                ($current['punched_at']->getTimestamp() - $previous['punched_at']->getTimestamp()) / 60,
+            );
+
+            if ($gapMinutes < 5) {
+                continue;
+            }
+
+            if ($bestPair === null || $gapMinutes >= $bestPair['gap_minutes']) {
+                $bestPair = [
+                    'first_out' => $previous,
+                    'second_in' => $current,
+                    'gap_minutes' => $gapMinutes,
+                ];
+            }
+        }
+
+        if ($bestPair === null) {
+            return null;
+        }
+
+        $postBreakPunches = array_values(array_filter(
+            $this->effectivePunches(
+                array_slice($punches, $bestPair['second_in']['index'] + 1),
+            ),
+            fn (array $punch): bool => ! $this->isWithinBreakWindow(
+                $punch['punched_at'],
+                $schedule->breakWindowStart,
+                $schedule->breakWindowEnd,
+            ),
+        ));
+        $slots = [
+            'first_in' => $punches[0],
+            'first_out' => $punches[$bestPair['first_out']['index']],
+            'second_in' => $punches[$bestPair['second_in']['index']],
+            'second_out' => null,
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ];
+
+        if (count($postBreakPunches) === 1) {
+            $slots['second_out'] = $postBreakPunches[0];
+        } elseif (count($postBreakPunches) === 2) {
+            if ($postBreakPunches[0]['punched_at']->greaterThan(
+                $schedule->expectedCheckOut,
+            )) {
+                $slots['overtime_in'] = $postBreakPunches[0];
+                $slots['overtime_out'] = $postBreakPunches[1];
+            } else {
+                $slots['second_out'] = $postBreakPunches[0];
+                $slots['overtime_in'] = $postBreakPunches[1];
+            }
+        } elseif (count($postBreakPunches) >= 3) {
+            $slots['second_out'] = $postBreakPunches[0];
+            $slots['overtime_in'] = $postBreakPunches[1];
+            $slots['overtime_out'] = $postBreakPunches[2];
+        }
+
+        return $slots;
+    }
+
+    private function isWithinBreakWindow(
+        CarbonImmutable $punchedAt,
+        string $windowStart,
+        string $windowEnd,
+    ): bool {
+        $punchMinutes = ($punchedAt->hour * 60) + $punchedAt->minute;
+        [$startHour, $startMinute] = array_map('intval', explode(':', $windowStart, 2));
+        [$endHour, $endMinute] = array_map('intval', explode(':', $windowEnd, 2));
+        $startMinutes = ($startHour * 60) + $startMinute;
+        $endMinutes = ($endHour * 60) + $endMinute;
+
+        if ($startMinutes <= $endMinutes) {
+            return $punchMinutes >= $startMinutes && $punchMinutes <= $endMinutes;
+        }
+
+        return $punchMinutes >= $startMinutes || $punchMinutes <= $endMinutes;
+    }
+
+    /**
+     * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $effectivePunches
+     */
+    private function securityCheckoutPunchCount(
+        array $effectivePunches,
+        AttendanceSchedule $schedule,
+    ): int {
+        if ($schedule->profile !== 'security' || $schedule->expectedPunchCount > 2) {
+            return 0;
+        }
+
+        $windowMinutes = (int) config('attendance.checkout_review_window_minutes', 120);
+        $windowStartsAt = $schedule->expectedCheckOut->subMinutes($windowMinutes);
+        $windowEndsAt = $schedule->expectedCheckOut->addMinutes($windowMinutes);
+
+        return count(array_filter(
+            array_slice($effectivePunches, 1),
+            fn (array $punch): bool => $punch['punched_at']->greaterThanOrEqualTo($windowStartsAt)
+                && $punch['punched_at']->lessThanOrEqualTo($windowEndsAt),
+        ));
+    }
+
+    /**
+     * @param  list<array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}>  $punches
+     * @return array{
+     *     first_in: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
      *     first_out: null,
      *     second_in: null,
      *     second_out: array{raw_value: string, punched_at: CarbonImmutable, is_next_day: bool, sequence: int}|null,
@@ -365,30 +634,37 @@ class AttendanceImportService
      */
     private function securityClockSlots(array $punches, AttendanceSchedule $schedule): array
     {
+        $punchCount = count($punches);
         $slots = [
             'first_in' => $punches[0] ?? null,
-            'first_out' => null,
-            'second_in' => null,
-            'second_out' => null,
+            'first_out' => $punchCount >= 3 ? $punches[1] : null,
+            'second_in' => $punchCount >= 3 ? $punches[2] : null,
+            'second_out' => $punchCount === 2 ? $punches[1] : null,
             'overtime_in' => null,
             'overtime_out' => null,
         ];
 
-        if (count($punches) < 2) {
+        if ($punchCount < 3) {
             return $slots;
         }
 
-        $secondOutIndex = 1;
+        $secondOutIndex = null;
         $regularCheckoutThreshold = $schedule->expectedCheckOut->addMinutes(59);
 
-        foreach (array_slice($punches, 1, null, true) as $index => $punch) {
+        foreach (array_slice($punches, 3, null, true) as $index => $punch) {
             if ($punch['punched_at']->lessThanOrEqualTo($regularCheckoutThreshold)) {
                 $secondOutIndex = $index;
             }
         }
 
-        $slots['second_out'] = $punches[$secondOutIndex];
-        $remaining = array_slice($punches, $secondOutIndex + 1);
+        if ($secondOutIndex !== null) {
+            $slots['second_out'] = $punches[$secondOutIndex];
+        }
+
+        $remaining = array_slice(
+            $punches,
+            $secondOutIndex === null ? 3 : $secondOutIndex + 1,
+        );
         $slots['overtime_in'] = $remaining[0] ?? null;
         $slots['overtime_out'] = $remaining[1] ?? null;
 
@@ -432,24 +708,13 @@ class AttendanceImportService
         return (int) round(($actual->getTimestamp() - $expected->getTimestamp()) / 60);
     }
 
-    private function isHourlyWorker(Karyawan $karyawan): bool
-    {
-        return Str::contains(
-            Str::lower((string) $karyawan->metode_penggajian),
-            ['per jam', 'hourly'],
-        );
-    }
-
     /**
      * @param  list<string>  $calculationNotes
      * @return list<string>
      */
     private function comparisonNotes(
-        Karyawan $karyawan,
         AttendanceSchedule $schedule,
-        int $lateMinutes,
-        bool $isLate,
-        ?int $latePenaltyHours,
+        array $latenessNotes,
         int $duplicateCount,
         int $ignoredPunchCount,
         int $effectivePunchCount,
@@ -464,23 +729,11 @@ class AttendanceImportService
         }
 
         if ($ignoredPunchCount > 0) {
-            $notes[] = "{$ignoredPunchCount} punch tambahan di luar enam slot diabaikan.";
+            $notes[] = "{$ignoredPunchCount} punch tambahan diabaikan setelah pemetaan slot.";
         }
 
         if ($hasMissingPunch) {
             $notes[] = "Punch efektif {$effectivePunchCount} dari {$schedule->expectedPunchCount}.";
-        }
-
-        if ($isLate) {
-            $notes[] = "Terlambat {$lateMinutes} menit.";
-
-            if ($latePenaltyHours !== null) {
-                $notes[] = "Potongan {$latePenaltyHours} jam.";
-            } else {
-                $notes[] = 'Aturan potongan untuk metode penggajian '
-                    .($karyawan->metode_penggajian ?: 'yang belum ditentukan')
-                    .' belum tersedia.';
-            }
         }
 
         if ($earlyLeaveMinutes > 0) {
@@ -489,6 +742,7 @@ class AttendanceImportService
 
         return [
             ...$notes,
+            ...$latenessNotes,
             ...$calculationNotes,
             ...$schedule->reviewNotes,
         ];

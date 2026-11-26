@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Head, router, useForm } from "@inertiajs/vue3";
 import { useConfirm } from "primevue/useconfirm";
 import AdminLayout from "@/Layouts/AdminLayout.vue";
@@ -8,6 +8,7 @@ import StatCard from "@/Components/Admin/StatCard.vue";
 import EmptyState from "@/Components/Admin/EmptyState.vue";
 import FormField from "@/Components/Admin/FormField.vue";
 import EmployeeAutocomplete from "@/Components/Admin/EmployeeAutocomplete.vue";
+import AttendancePunchCell from "@/Components/Admin/AttendancePunchCell.vue";
 
 const props = defineProps({
     records: { type: Object, required: true },
@@ -22,8 +23,16 @@ const confirm = useConfirm();
 const loading = ref(false);
 const dialogVisible = ref(false);
 const editingRecord = ref(null);
-const inlineEditingEmployeeId = ref(null);
+const inlineEditingRecordId = ref(null);
+const draggedPunch = ref(null);
+const dragOverPunch = ref(null);
+const deletedPunch = ref(null);
 const fileInputKey = ref(0);
+const anomalyScanVisible = ref(false);
+const anomalyScanLoading = ref(false);
+const anomalyScanError = ref("");
+const anomalyScanResult = ref(null);
+let deletedPunchTimeout = null;
 const filters = reactive({ ...props.filters });
 const uploadProgress = computed(() => uploadForm.progress?.percentage ?? 0);
 const latestImport = computed(() => props.recentImports[0] ?? null);
@@ -42,6 +51,14 @@ const longDateLabel = computed(() => {
 const editableStatuses = computed(() => props.options.statuses.filter(
     (status) => status.value !== "missing",
 ));
+const punchColumns = [
+    { field: "first_in", label: "First In" },
+    { field: "first_out", label: "First Out" },
+    { field: "second_in", label: "Second In" },
+    { field: "second_out", label: "Second Out" },
+    { field: "overtime_in", label: "Overtime In" },
+    { field: "overtime_out", label: "Overtime Out" },
+];
 
 const form = useForm({
     employee: null,
@@ -57,6 +74,20 @@ const uploadForm = useForm({
     attendance_file: null,
 });
 
+const anomalyScanForm = reactive({
+    scope: "active",
+    start_date: props.filters.date,
+    end_date: props.filters.date,
+    short_work_minutes: 60,
+    long_work_minutes: 120,
+    overtime_threshold_hours: 4,
+});
+
+const anomalyScopeOptions = [
+    { label: "Tanggal aktif", value: "active" },
+    { label: "Rentang tanggal", value: "range" },
+];
+
 const inlineForm = useForm({
     status: "present",
     first_in: "",
@@ -66,6 +97,12 @@ const inlineForm = useForm({
     overtime_in: "",
     overtime_out: "",
 });
+
+watch(
+    () => props.filters,
+    (nextFilters) => Object.assign(filters, nextFilters),
+    { deep: true },
+);
 
 function load() {
     router.get(route("admin.attendance.index"), queryParams(), {
@@ -112,7 +149,7 @@ function openEdit(record) {
 }
 
 function startInlineEdit(record) {
-    inlineEditingEmployeeId.value = record.employee.id;
+    inlineEditingRecordId.value = record.id;
     inlineForm.clearErrors();
     inlineForm.status = record.status === "missing" ? "present" : record.status;
     inlineForm.first_in = record.first_in || "";
@@ -124,14 +161,15 @@ function startInlineEdit(record) {
 }
 
 function cancelInlineEdit() {
-    inlineEditingEmployeeId.value = null;
+    inlineEditingRecordId.value = null;
     inlineForm.clearErrors();
+    endPunchDrag();
 }
 
-function saveInline(record) {
+function saveInline(record, options = {}) {
     inlineForm.transform((data) => ({
         karyawan_id: record.employee.id,
-        attendance_date: filters.date,
+        attendance_date: record.attendance_date,
         status: data.status,
         first_in: data.first_in || null,
         first_out: data.first_out || null,
@@ -144,10 +182,139 @@ function saveInline(record) {
     inlineForm.put(route("admin.attendance.update-inline"), {
         preserveScroll: true,
         onSuccess: () => {
-            inlineEditingEmployeeId.value = null;
+            if (options.closeOnSuccess !== false) {
+                inlineEditingRecordId.value = null;
+            }
+
+            options.onSuccess?.();
+        },
+        onError: (errors) => options.onError?.(errors),
+    });
+}
+
+function isInlineEditing(record) {
+    return inlineEditingRecordId.value === record.id;
+}
+
+function isPunchDropTarget(record, field) {
+    return dragOverPunch.value?.recordId === record.id
+        && dragOverPunch.value?.field === field;
+}
+
+function startPunchDrag(record, field, event) {
+    if (!isInlineEditing(record) || !inlineForm[field]) {
+        event.preventDefault();
+
+        return;
+    }
+
+    draggedPunch.value = { recordId: record.id, field };
+    dragOverPunch.value = null;
+}
+
+function onPunchDragOver(record, field, event) {
+    const source = draggedPunch.value;
+
+    if (
+        !source
+        || source.recordId !== record.id
+        || source.field === field
+        || inlineForm.processing
+    ) {
+        return;
+    }
+
+    event.preventDefault();
+    dragOverPunch.value = { recordId: record.id, field };
+}
+
+function endPunchDrag() {
+    draggedPunch.value = null;
+    dragOverPunch.value = null;
+}
+
+function dropPunch(record, field, event) {
+    event.preventDefault();
+
+    const source = draggedPunch.value;
+
+    if (!source || source.recordId !== record.id || source.field === field) {
+        endPunchDrag();
+
+        return;
+    }
+
+    const sourceValue = inlineForm[source.field] || "";
+    const targetValue = inlineForm[field] || "";
+    inlineForm[source.field] = targetValue;
+    inlineForm[field] = sourceValue;
+    endPunchDrag();
+
+    saveInline(record, {
+        closeOnSuccess: false,
+        onError: () => {
+            inlineForm[source.field] = sourceValue;
+            inlineForm[field] = targetValue;
         },
     });
 }
+
+function deletePunch(record, field) {
+    if (!isInlineEditing(record) || !inlineForm[field] || inlineForm.processing) {
+        return;
+    }
+
+    const previousValue = inlineForm[field];
+    const punchLabel = punchColumns.find((punch) => punch.field === field)?.label || field;
+    inlineForm[field] = "";
+
+    saveInline(record, {
+        closeOnSuccess: false,
+        onSuccess: () => rememberDeletedPunch(record.id, field, punchLabel, previousValue),
+        onError: () => {
+            inlineForm[field] = previousValue;
+        },
+    });
+}
+
+function rememberDeletedPunch(recordId, field, label, value) {
+    window.clearTimeout(deletedPunchTimeout);
+    deletedPunch.value = { recordId, field, label, value };
+    deletedPunchTimeout = window.setTimeout(() => {
+        deletedPunch.value = null;
+    }, 8000);
+}
+
+function undoPunchDelete() {
+    const deletion = deletedPunch.value;
+
+    if (!deletion) {
+        return;
+    }
+
+    const record = props.records.data.find((item) => item.id === deletion.recordId);
+
+    if (!record) {
+        deletedPunch.value = null;
+
+        return;
+    }
+
+    if (!isInlineEditing(record)) {
+        startInlineEdit(record);
+    }
+
+    inlineForm[deletion.field] = deletion.value;
+    saveInline(record, {
+        closeOnSuccess: false,
+        onSuccess: () => {
+            window.clearTimeout(deletedPunchTimeout);
+            deletedPunch.value = null;
+        },
+    });
+}
+
+onBeforeUnmount(() => window.clearTimeout(deletedPunchTimeout));
 
 function save() {
     form.transform((data) => ({
@@ -189,6 +356,22 @@ function removeRecord(record) {
     });
 }
 
+function clearReview(record) {
+    confirm.require({
+        message: `Hapus status review ${record.employee.name} tanggal ${formatDate(record.attendance_date)}? Punch dan jam kerja tidak akan berubah.`,
+        header: "Hapus status review?",
+        icon: "pi pi-exclamation-triangle",
+        rejectLabel: "Batal",
+        acceptLabel: "Hapus review",
+        rejectClass: "p-button-secondary p-button-outlined",
+        acceptClass: "p-button-warning",
+        accept: () => router.delete(
+            route("admin.attendance.destroy-review", record.id),
+            { preserveScroll: true },
+        ),
+    });
+}
+
 function chooseUploadFile(event) {
     uploadForm.attendance_file = event.target.files?.[0] ?? null;
     uploadForm.clearErrors();
@@ -210,6 +393,92 @@ function scrollToImport() {
         behavior: "smooth",
         block: "start",
     });
+}
+
+function openAnomalyScan() {
+    anomalyScanError.value = "";
+    anomalyScanResult.value = null;
+    anomalyScanForm.scope = "active";
+    anomalyScanForm.start_date = filters.date;
+    anomalyScanForm.end_date = filters.date;
+    anomalyScanVisible.value = true;
+}
+
+function changeAnomalyScanScope() {
+    if (anomalyScanForm.scope === "active") {
+        anomalyScanForm.start_date = filters.date;
+        anomalyScanForm.end_date = filters.date;
+    }
+}
+
+async function runAnomalyScan() {
+    anomalyScanLoading.value = true;
+    anomalyScanError.value = "";
+
+    try {
+        const startDate = anomalyScanForm.scope === "active"
+            ? filters.date
+            : anomalyScanForm.start_date;
+        const endDate = anomalyScanForm.scope === "active"
+            ? filters.date
+            : anomalyScanForm.end_date;
+        const response = await fetch(route("admin.attendance.anomalies", {
+            start_date: startDate,
+            end_date: endDate,
+            short_work_minutes: anomalyScanForm.short_work_minutes,
+            long_work_minutes: anomalyScanForm.long_work_minutes,
+            overtime_threshold_hours: anomalyScanForm.overtime_threshold_hours,
+        }), {
+            headers: {
+                Accept: "application/json",
+            },
+        });
+        const payload = await response.json();
+
+        if (!response.ok) {
+            anomalyScanError.value = payload.errors
+                ? Object.values(payload.errors).flat().join(" ")
+                : payload.message || "Scan anomali gagal.";
+
+            return;
+        }
+
+        anomalyScanResult.value = payload;
+    } catch {
+        anomalyScanError.value = "Scan anomali gagal dihubungi. Coba lagi.";
+    } finally {
+        anomalyScanLoading.value = false;
+    }
+}
+
+function anomalySeverity(severity) {
+    return {
+        critical: "danger",
+        warning: "warn",
+        info: "info",
+    }[severity] || "secondary";
+}
+
+function anomalySeverityLabel(severity) {
+    return {
+        critical: "Critical",
+        warning: "Warning",
+        info: "Info",
+    }[severity] || severity;
+}
+
+function punchSummary(anomaly) {
+    return [
+        ["IN", anomaly.first_in, 0],
+        ["OUT", anomaly.first_out, anomaly.first_out_day_offset],
+        ["IN 2", anomaly.second_in, anomaly.second_in_day_offset],
+        ["OUT 2", anomaly.second_out, anomaly.second_out_day_offset],
+        ["OT IN", anomaly.overtime_in, anomaly.overtime_in_day_offset],
+        ["OT OUT", anomaly.overtime_out, anomaly.overtime_out_day_offset],
+    ]
+        .filter(([, value]) => value)
+        .map(([label, value, dayOffset]) => `${label} ${value}${dayOffset ? " +1d" : ""}`)
+        .join(" · ") || "-";
 }
 
 function onPage(event) {
@@ -362,6 +631,7 @@ function statusSeverity(status) {
                 eyebrow="Daily operations"
             >
                 <template #actions>
+                    <Button label="Scan Anomali" icon="pi pi-search" severity="warn" outlined @click="openAnomalyScan" />
                     <Button label="Hapus Harian" icon="pi pi-trash" severity="danger" outlined @click="deleteAttendanceDay" />
                     <Button label="Import Excel" icon="pi pi-file-excel" severity="secondary" outlined @click="scrollToImport" />
                     <Button label="Tambah Absensi" icon="pi pi-plus" severity="danger" @click="openCreate" />
@@ -550,6 +820,12 @@ function statusSeverity(status) {
                     <Message v-if="inlineForm.hasErrors" severity="error" :closable="false" class="mb-3">
                         {{ Object.values(inlineForm.errors)[0] }}
                     </Message>
+                    <Message v-if="deletedPunch" severity="info" :closable="false" class="mb-3">
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <span>{{ deletedPunch.label }} berhasil dihapus. Perhitungan absensi sudah diperbarui.</span>
+                            <Button label="Undo" icon="pi pi-undo" size="small" text severity="info" :disabled="inlineForm.processing" @click="undoPunchDelete" />
+                        </div>
+                    </Message>
                     <DataTable
                         :value="records.data"
                         :loading="loading"
@@ -567,9 +843,16 @@ function statusSeverity(status) {
                         <template #empty>
                             <EmptyState title="Belum ada absensi" description="Tambahkan absensi pertama atau ubah periode filter." icon="pi pi-calendar-plus" />
                         </template>
-                        <Column field="employee.nip" header="NIP" frozen sortable style="min-width: 110px">
+                        <Column field="employee.nip" header="NIP" frozen sortable style="min-width: 150px">
                             <template #body="{ data }">
-                                <span class="font-mono font-semibold text-slate-900 dark:text-white">{{ data.employee.nip }}</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="font-mono font-semibold text-slate-900 dark:text-white">{{ data.employee.nip }}</span>
+                                    <template v-if="isInlineEditing(data)">
+                                        <Button icon="pi pi-check" text rounded severity="success" aria-label="Simpan" :loading="inlineForm.processing" @click="saveInline(data)" />
+                                        <Button icon="pi pi-times" text rounded severity="secondary" aria-label="Batal" @click="cancelInlineEdit" />
+                                    </template>
+                                    <Button v-else icon="pi pi-pencil" text rounded severity="secondary" aria-label="Edit baris" @click="startInlineEdit(data)" />
+                                </div>
                             </template>
                         </Column>
                         <Column field="employee.name" header="Karyawan" frozen sortable style="min-width: 220px">
@@ -580,10 +863,10 @@ function statusSeverity(status) {
                                 </div>
                             </template>
                         </Column>
-                        <Column field="status" header="Status" sortable style="min-width: 140px">
+                        <Column field="status" header="Status" sortable style="min-width: 190px">
                             <template #body="{ data }">
                                 <Select
-                                    v-if="inlineEditingEmployeeId === data.employee.id"
+                                    v-if="isInlineEditing(data)"
                                     v-model="inlineForm.status"
                                     :options="editableStatuses"
                                     option-label="label"
@@ -594,6 +877,21 @@ function statusSeverity(status) {
                                 <div v-else class="flex flex-wrap gap-1">
                                     <Tag :severity="statusSeverity(data.status)">{{ data.status_label }}</Tag>
                                     <Tag v-if="data.requires_review" severity="warn" icon="pi pi-exclamation-triangle">Review</Tag>
+                                    <Button
+                                        v-if="data.requires_review"
+                                        label="Hapus review"
+                                        icon="pi pi-check"
+                                        size="small"
+                                        text
+                                        severity="warning"
+                                        @click="clearReview(data)"
+                                    />
+                                    <p
+                                        v-if="data.review_resolved_by"
+                                        class="basis-full text-xs text-slate-500 dark:text-slate-400"
+                                    >
+                                        Review dihapus oleh {{ data.review_resolved_by }}
+                                    </p>
                                 </div>
                             </template>
                         </Column>
@@ -612,40 +910,32 @@ function statusSeverity(status) {
                                 </Tag>
                             </template>
                         </Column>
-                        <Column field="first_in" header="First In" sortable style="min-width: 95px">
+                        <Column
+                            v-for="punch in punchColumns"
+                            :key="punch.field"
+                            :field="punch.field"
+                            :header="punch.label"
+                            sortable
+                            style="min-width: 170px"
+                        >
                             <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.first_in" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.first_in)" />
-                                <span v-else>{{ data.first_in || "-" }}</span>
-                            </template>
-                        </Column>
-                        <Column field="first_out" header="First Out" sortable style="min-width: 95px">
-                            <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.first_out" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.first_out)" />
-                                <span v-else>{{ data.first_out || "-" }}</span>
-                            </template>
-                        </Column>
-                        <Column field="second_in" header="Second In" sortable style="min-width: 100px">
-                            <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.second_in" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.second_in)" />
-                                <span v-else>{{ data.second_in || "-" }}{{ data.second_in_day_offset ? " +1d" : "" }}</span>
-                            </template>
-                        </Column>
-                        <Column field="second_out" header="Second Out" sortable style="min-width: 105px">
-                            <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.second_out" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.second_out)" />
-                                <span v-else>{{ data.second_out || "-" }}{{ data.second_out_day_offset ? " +1d" : "" }}</span>
-                            </template>
-                        </Column>
-                        <Column field="overtime_in" header="Overtime In" sortable style="min-width: 120px">
-                            <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.overtime_in" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.overtime_in)" />
-                                <span v-else>{{ data.overtime_in || "-" }}{{ data.overtime_in_day_offset ? " +1d" : "" }}</span>
-                            </template>
-                        </Column>
-                        <Column field="overtime_out" header="Overtime Out" sortable style="min-width: 125px">
-                            <template #body="{ data }">
-                                <InputText v-if="inlineEditingEmployeeId === data.employee.id" v-model="inlineForm.overtime_out" type="time" class="w-32" :invalid="Boolean(inlineForm.errors.overtime_out)" />
-                                <span v-else>{{ data.overtime_out || "-" }}{{ data.overtime_out_day_offset ? " +1d" : "" }}</span>
+                                <AttendancePunchCell
+                                    :editing="isInlineEditing(data)"
+                                    :field="punch.field"
+                                    :label="punch.label"
+                                    :model-value="isInlineEditing(data) ? inlineForm[punch.field] : (data[punch.field] || '')"
+                                    :display-value="data[punch.field]"
+                                    :day-offset="data[`${punch.field}_day_offset`] || 0"
+                                    :invalid="Boolean(inlineForm.errors[punch.field])"
+                                    :disabled="inlineForm.processing"
+                                    :drop-active="isPunchDropTarget(data, punch.field)"
+                                    @update:model-value="inlineForm[punch.field] = $event"
+                                    @drag-start="startPunchDrag(data, punch.field, $event)"
+                                    @drag-over="onPunchDragOver(data, punch.field, $event)"
+                                    @drag-end="endPunchDrag"
+                                    @drop="dropPunch(data, punch.field, $event)"
+                                    @delete="deletePunch(data, punch.field)"
+                                />
                             </template>
                         </Column>
                         <Column field="has_missing_punch" header="Punch" sortable style="min-width: 220px">
@@ -656,6 +946,24 @@ function statusSeverity(status) {
                                     <Tag v-if="data.has_duplicate_punch" severity="secondary" icon="pi pi-copy">{{ data.duplicate_punch_count }} ganda</Tag>
                                     <Tag v-if="data.has_missing_punch" severity="danger" icon="pi pi-exclamation-circle">Missed</Tag>
                                     <Tag v-if="data.ignored_punch_count" severity="secondary">{{ data.ignored_punch_count }} diabaikan</Tag>
+                                </div>
+                            </template>
+                        </Column>
+                        <Column
+                            field="monthly_review_count"
+                            header="Review bulan ini"
+                            sortable
+                            style="min-width: 160px"
+                        >
+                            <template #body="{ data }">
+                                <div class="space-y-1">
+                                    <p class="font-semibold text-slate-800 dark:text-slate-100">
+                                        {{ data.monthly_review_count }} kali
+                                    </p>
+                                    <Tag v-if="data.review_penalty_hours" severity="danger">
+                                        Denda {{ data.review_penalty_hours }} jam
+                                    </Tag>
+                                    <p v-else class="text-xs text-slate-400">Belum melewati batas 3 review</p>
                                 </div>
                             </template>
                         </Column>
@@ -693,14 +1001,7 @@ function statusSeverity(status) {
                         <Column header="Aksi" style="width: 100px">
                             <template #body="{ data }">
                                 <div class="flex justify-end gap-1">
-                                    <template v-if="inlineEditingEmployeeId === data.employee.id">
-                                        <Button icon="pi pi-check" text rounded severity="success" aria-label="Simpan" :loading="inlineForm.processing" @click="saveInline(data)" />
-                                        <Button icon="pi pi-times" text rounded severity="secondary" aria-label="Batal" @click="cancelInlineEdit" />
-                                    </template>
-                                    <template v-else>
-                                        <Button icon="pi pi-pencil" text rounded severity="secondary" aria-label="Edit baris" @click="startInlineEdit(data)" />
-                                        <Button v-if="data.has_attendance" icon="pi pi-trash" text rounded severity="danger" aria-label="Hapus" @click="removeRecord(data)" />
-                                    </template>
+                                    <Button v-if="data.has_attendance" icon="pi pi-trash" text rounded severity="danger" aria-label="Hapus" @click="removeRecord(data)" />
                                 </div>
                             </template>
                         </Column>
@@ -739,6 +1040,180 @@ function statusSeverity(status) {
                     <Button type="submit" label="Simpan absensi" icon="pi pi-check" severity="danger" :loading="form.processing" />
                 </div>
             </form>
+        </Dialog>
+
+        <Dialog
+            v-model:visible="anomalyScanVisible"
+            header="Scan anomali attendance"
+            modal
+            :style="{ width: 'min(96vw, 1180px)' }"
+            :breakpoints="{ '960px': '96vw' }"
+        >
+            <div class="space-y-5">
+                <div class="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                    Scan memakai jadwal aktif saat ini, termasuk jadwal reguler, pengecualian kalender, hari libur, dan jadwal khusus seperti Ramadan.
+                </div>
+
+                <form class="space-y-4" @submit.prevent="runAnomalyScan">
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                        <FormField label="Cakupan scan">
+                            <Select
+                                v-model="anomalyScanForm.scope"
+                                :options="anomalyScopeOptions"
+                                option-label="label"
+                                option-value="value"
+                                class="w-full"
+                                @update:model-value="changeAnomalyScanScope"
+                            />
+                        </FormField>
+                        <FormField label="Tanggal awal">
+                            <InputText
+                                v-model="anomalyScanForm.start_date"
+                                type="date"
+                                class="w-full"
+                                :disabled="anomalyScanForm.scope === 'active'"
+                            />
+                        </FormField>
+                        <FormField label="Tanggal akhir">
+                            <InputText
+                                v-model="anomalyScanForm.end_date"
+                                type="date"
+                                class="w-full"
+                                :disabled="anomalyScanForm.scope === 'active'"
+                            />
+                        </FormField>
+                        <FormField label="Kurang dari standar (menit)">
+                            <InputNumber
+                                v-model="anomalyScanForm.short_work_minutes"
+                                :min="0"
+                                :max="1440"
+                                class="w-full"
+                                input-class="w-full"
+                            />
+                        </FormField>
+                        <FormField label="Lembur maksimal (jam)">
+                            <InputNumber
+                                v-model="anomalyScanForm.overtime_threshold_hours"
+                                :min="0"
+                                :max="24"
+                                :min-fraction-digits="0"
+                                :max-fraction-digits="1"
+                                class="w-full"
+                                input-class="w-full"
+                            />
+                        </FormField>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                        <FormField label="Lebih dari standar (menit)">
+                            <InputNumber
+                                v-model="anomalyScanForm.long_work_minutes"
+                                :min="0"
+                                :max="1440"
+                                class="w-full"
+                                input-class="w-full"
+                            />
+                        </FormField>
+                        <div class="flex items-end gap-2 xl:col-span-4">
+                            <Button
+                                type="submit"
+                                label="Scan sekarang"
+                                icon="pi pi-search"
+                                severity="warn"
+                                :loading="anomalyScanLoading"
+                            />
+                            <span class="pb-3 text-xs text-slate-500 dark:text-slate-400">
+                                Maksimal 31 hari per scan.
+                            </span>
+                        </div>
+                    </div>
+                </form>
+
+                <Message v-if="anomalyScanError" severity="error" :closable="false">
+                    {{ anomalyScanError }}
+                </Message>
+
+                <template v-if="anomalyScanResult">
+                    <div class="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                        <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                            <p class="text-xs text-slate-500">Record dipindai</p>
+                            <p class="mt-1 text-xl font-bold text-slate-900 dark:text-white">{{ anomalyScanResult.summary.records }}</p>
+                            <p v-if="anomalyScanResult.summary.skipped_review" class="mt-1 text-xs text-slate-500">
+                                {{ anomalyScanResult.summary.skipped_review }} review dilewati
+                            </p>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                            <p class="text-xs text-slate-500">Record terdampak</p>
+                            <p class="mt-1 text-xl font-bold text-slate-900 dark:text-white">{{ anomalyScanResult.summary.affected_records }}</p>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                            <p class="text-xs text-slate-500">Karyawan</p>
+                            <p class="mt-1 text-xl font-bold text-slate-900 dark:text-white">{{ anomalyScanResult.summary.affected_employees }}</p>
+                        </div>
+                        <div class="rounded-xl border border-red-200 bg-red-50/60 p-3 dark:border-red-500/30 dark:bg-red-500/10">
+                            <p class="text-xs text-red-700 dark:text-red-200">Critical</p>
+                            <p class="mt-1 text-xl font-bold text-red-700 dark:text-red-200">{{ anomalyScanResult.summary.critical }}</p>
+                        </div>
+                        <div class="rounded-xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
+                            <p class="text-xs text-amber-700 dark:text-amber-200">Warning</p>
+                            <p class="mt-1 text-xl font-bold text-amber-700 dark:text-amber-200">{{ anomalyScanResult.summary.warning }}</p>
+                        </div>
+                        <div class="rounded-xl border border-sky-200 bg-sky-50/60 p-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+                            <p class="text-xs text-sky-700 dark:text-sky-200">Info</p>
+                            <p class="mt-1 text-xl font-bold text-sky-700 dark:text-sky-200">{{ anomalyScanResult.summary.info }}</p>
+                        </div>
+                    </div>
+
+                    <DataTable
+                        :value="anomalyScanResult.results"
+                        paginator
+                        :rows="10"
+                        :rows-per-page-options="[10, 25, 50]"
+                        scrollable
+                        scroll-height="480px"
+                    >
+                        <template #empty>
+                            <EmptyState title="Tidak ada anomali" description="Tidak ditemukan anomali pada periode dan threshold ini." icon="pi pi-check-circle" />
+                        </template>
+                        <Column header="Severity" style="min-width: 105px">
+                            <template #body="{ data }">
+                                <Tag :severity="anomalySeverity(data.severity)">{{ anomalySeverityLabel(data.severity) }}</Tag>
+                            </template>
+                        </Column>
+                        <Column header="Tanggal" style="min-width: 105px">
+                            <template #body="{ data }">{{ formatDate(data.attendance_date) }}</template>
+                        </Column>
+                        <Column header="Karyawan" style="min-width: 210px">
+                            <template #body="{ data }">
+                                <p class="font-semibold text-slate-900 dark:text-white">{{ data.employee_name }}</p>
+                                <p class="mt-1 text-xs text-slate-500">{{ data.employee_nip }} · {{ data.department || "-" }}</p>
+                            </template>
+                        </Column>
+                        <Column header="Jadwal aktif" style="min-width: 190px">
+                            <template #body="{ data }">
+                                <p class="font-medium text-slate-800 dark:text-slate-100">{{ data.schedule_context }}</p>
+                                <p class="mt-1 text-xs text-slate-500">{{ data.schedule_profile }} · {{ data.shift }} · {{ data.expected_check_in }}-{{ data.expected_check_out }}</p>
+                            </template>
+                        </Column>
+                        <Column header="Anomali" style="min-width: 310px">
+                            <template #body="{ data }">
+                                <Tag severity="secondary">{{ data.category }}</Tag>
+                                <p class="mt-2 text-sm text-slate-700 dark:text-slate-200">{{ data.message }}</p>
+                            </template>
+                        </Column>
+                        <Column header="Ekspektasi / Aktual" style="min-width: 180px">
+                            <template #body="{ data }">
+                                <p class="text-xs text-slate-500">Expected: <span class="font-medium text-slate-700 dark:text-slate-200">{{ data.expected ?? "-" }}</span></p>
+                                <p class="mt-1 text-xs text-slate-500">Actual: <span class="font-medium text-slate-700 dark:text-slate-200">{{ data.actual ?? "-" }}</span></p>
+                            </template>
+                        </Column>
+                        <Column header="Slot punch" style="min-width: 280px">
+                            <template #body="{ data }">
+                                <p class="text-xs leading-5 text-slate-600 dark:text-slate-300">{{ punchSummary(data) }}</p>
+                            </template>
+                        </Column>
+                    </DataTable>
+                </template>
+            </div>
         </Dialog>
     </AdminLayout>
 </template>

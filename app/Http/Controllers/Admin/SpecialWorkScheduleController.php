@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\SpecialWorkSchedule;
+use App\Support\Attendance\AttendanceCalendarRecalculator;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -11,16 +12,25 @@ use Illuminate\Validation\Rule;
 
 class SpecialWorkScheduleController extends Controller
 {
+    public function __construct(
+        private AttendanceCalendarRecalculator $calendarRecalculator,
+    ) {}
+
     public function store(Request $request): RedirectResponse
     {
         Gate::authorize('access-developer-settings');
 
-        SpecialWorkSchedule::query()->create($this->validatedData($request));
+        $specialWorkSchedule = SpecialWorkSchedule::query()->create($this->validatedData($request));
+        $recalculatedCount = $this->recalculateFor(
+            $specialWorkSchedule,
+            $request->user()->id,
+        );
 
         return back()->with('toast', [
             'type' => 'success',
             'title' => 'Jadwal khusus ditambahkan',
-            'message' => 'Periode jadwal kerja khusus berhasil dibuat.',
+            'message' => 'Periode jadwal kerja khusus berhasil dibuat. '
+                .$recalculatedCount.' attendance dihitung ulang.',
         ]);
     }
 
@@ -28,12 +38,26 @@ class SpecialWorkScheduleController extends Controller
     {
         Gate::authorize('access-developer-settings');
 
+        $oldStartsOn = $specialWorkSchedule->starts_on->toImmutable();
+        $oldEndsOn = $specialWorkSchedule->ends_on->toImmutable();
+        $oldCompanyId = $specialWorkSchedule->company_id;
         $specialWorkSchedule->update($this->validatedData($request));
+        $recalculatedCount = $this->calendarRecalculator->recalculateDateRange(
+            $oldStartsOn->lessThan($specialWorkSchedule->starts_on)
+                ? $oldStartsOn
+                : $specialWorkSchedule->starts_on->toImmutable(),
+            $oldEndsOn->greaterThan($specialWorkSchedule->ends_on)
+                ? $oldEndsOn
+                : $specialWorkSchedule->ends_on->toImmutable(),
+            $this->mergedCompanyIds($oldCompanyId, $specialWorkSchedule->company_id),
+            $request->user()->id,
+        );
 
         return back()->with('toast', [
             'type' => 'success',
             'title' => 'Jadwal khusus diperbarui',
-            'message' => 'Perubahan jadwal kerja khusus berhasil disimpan.',
+            'message' => 'Perubahan jadwal kerja khusus berhasil disimpan. '
+                .$recalculatedCount.' attendance dihitung ulang.',
         ]);
     }
 
@@ -41,13 +65,55 @@ class SpecialWorkScheduleController extends Controller
     {
         Gate::authorize('access-developer-settings');
 
+        $startsOn = $specialWorkSchedule->starts_on->toImmutable();
+        $endsOn = $specialWorkSchedule->ends_on->toImmutable();
+        $companyIds = $this->companyIds($specialWorkSchedule->company_id);
         $specialWorkSchedule->delete();
+        $recalculatedCount = $this->calendarRecalculator->recalculateDateRange(
+            $startsOn,
+            $endsOn,
+            $companyIds,
+            request()->user()->id,
+        );
 
         return back()->with('toast', [
             'type' => 'success',
             'title' => 'Jadwal khusus dihapus',
-            'message' => 'Jadwal kerja khusus berhasil dihapus.',
+            'message' => 'Jadwal kerja khusus berhasil dihapus. '
+                .$recalculatedCount.' attendance dihitung ulang.',
         ]);
+    }
+
+    private function recalculateFor(
+        SpecialWorkSchedule $specialWorkSchedule,
+        int $recordedBy,
+    ): int {
+        return $this->calendarRecalculator->recalculateDateRange(
+            $specialWorkSchedule->starts_on->toImmutable(),
+            $specialWorkSchedule->ends_on->toImmutable(),
+            $this->companyIds($specialWorkSchedule->company_id),
+            $recordedBy,
+        );
+    }
+
+    /**
+     * @return list<int>|null
+     */
+    private function companyIds(?int $companyId): ?array
+    {
+        return $companyId === null ? null : [$companyId];
+    }
+
+    /**
+     * @return list<int>|null
+     */
+    private function mergedCompanyIds(?int $oldCompanyId, ?int $newCompanyId): ?array
+    {
+        if ($oldCompanyId === null || $newCompanyId === null) {
+            return null;
+        }
+
+        return array_values(array_unique([$oldCompanyId, $newCompanyId]));
     }
 
     /**

@@ -45,7 +45,6 @@ class SettingController extends Controller
             'payroll.cutoff_end_day' => ['required', 'integer', 'between:1,31'],
             'payroll.pay_date' => ['required', 'integer', 'between:1,31'],
             'attendance.work_start_time' => ['required', 'date_format:H:i'],
-            'attendance.late_tolerance_minutes' => ['required', 'integer', 'between:0,120'],
         ]);
 
         foreach ($validated as $group => $values) {

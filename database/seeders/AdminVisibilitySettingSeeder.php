@@ -11,7 +11,10 @@ class AdminVisibilitySettingSeeder extends Seeder
     {
         AdminVisibilitySetting::query()->updateOrCreate(
             ['id' => 1],
-            ['admin_salary_limit' => 4_500_000],
+            [
+                'admin_salary_limit' => 4_500_000,
+                'attendance_tolerance_minutes' => 3,
+            ],
         );
     }
 }

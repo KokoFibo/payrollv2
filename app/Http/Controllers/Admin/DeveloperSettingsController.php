@@ -11,6 +11,7 @@ use App\Models\NationalHoliday;
 use App\Models\SpecialWorkSchedule;
 use App\Support\AdminSalaryVisibility;
 use App\Support\Attendance\AttendanceCleanupService;
+use App\Support\Attendance\AttendancePolicySettings;
 use App\Support\MasterDataResources;
 use App\Support\Payroll\KaryawanMigrationService;
 use Illuminate\Http\RedirectResponse;
@@ -29,6 +30,7 @@ class DeveloperSettingsController extends Controller
         KaryawanMigrationService $migrationService,
         AttendanceCleanupService $attendanceCleanupService,
         AdminSalaryVisibility $salaryVisibility,
+        AttendancePolicySettings $attendancePolicySettings,
     ): Response {
         Gate::authorize('access-developer-settings');
 
@@ -217,6 +219,7 @@ class DeveloperSettingsController extends Controller
                     ->all(),
             ],
             'adminSalaryLimit' => $salaryVisibility->limit(),
+            'attendanceToleranceMinutes' => $attendancePolicySettings->toleranceMinutes(),
             'counts' => [
                 'employees' => Karyawan::query()->count(),
                 'activeEmployees' => Karyawan::query()
@@ -242,6 +245,27 @@ class DeveloperSettingsController extends Controller
             'type' => 'success',
             'title' => 'Batas gaji Admin diperbarui',
             'message' => 'Role Admin sekarang hanya dapat melihat karyawan sampai batas gaji yang baru.',
+        ]);
+    }
+
+    public function updateAttendanceTolerance(
+        Request $request,
+        AttendancePolicySettings $attendancePolicySettings,
+    ): RedirectResponse {
+        Gate::authorize('access-developer-settings');
+
+        $validated = $request->validate([
+            'attendance_tolerance_minutes' => ['required', 'integer', 'between:0,120'],
+        ]);
+
+        $attendancePolicySettings->updateToleranceMinutes(
+            $validated['attendance_tolerance_minutes'],
+        );
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'title' => 'Toleransi attendance diperbarui',
+            'message' => 'Toleransi keterlambatan punch masuk berhasil diubah.',
         ]);
     }
 

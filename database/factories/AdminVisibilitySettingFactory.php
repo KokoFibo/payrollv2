@@ -14,6 +14,7 @@ class AdminVisibilitySettingFactory extends Factory
     {
         return [
             'admin_salary_limit' => 4_500_000,
+            'attendance_tolerance_minutes' => 3,
         ];
     }
 }

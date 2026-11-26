@@ -23,6 +23,11 @@ final readonly class AttendanceSchedule
         public array $reviewNotes = [],
         public ?int $calendarOverrideId = null,
         public ?string $calendarOverrideName = null,
+        public float $breakHours = 0.0,
+        public ?string $breakWindowStart = null,
+        public ?string $breakWindowEnd = null,
+        public ?string $specialScheduleName = null,
+        public array $breakRules = [],
     ) {}
 
     public function shiftLabel(): string
