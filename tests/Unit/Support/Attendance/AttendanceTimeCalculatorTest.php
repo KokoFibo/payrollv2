@@ -58,6 +58,31 @@ it('uses overtime slots when the second checkout is followed by a break and over
         ->overtime_hours->toBe(1.0);
 });
 
+it('rounds overtime start with grace and overtime end down to half hours', function (
+    string $overtimeIn,
+    string $overtimeOut,
+    float $expectedOvertimeHours,
+) {
+    $result = (new AttendanceTimeCalculator)->calculate(
+        attendanceTimeSchedule('2026-11-19'),
+        [
+            attendancePunch('2026-11-19 08:00:00'),
+            attendancePunch('2026-11-19 11:30:00'),
+            attendancePunch('2026-11-19 12:30:00'),
+            attendancePunch('2026-11-19 17:00:00'),
+            attendancePunch("2026-11-19 {$overtimeIn}"),
+            attendancePunch("2026-11-19 {$overtimeOut}"),
+        ],
+    );
+
+    expect($result['overtime_hours'])->toBe($expectedOvertimeHours);
+})->with([
+    'three minutes after the slot uses the slot start' => ['18:03:00', '19:59:00', 1.5],
+    'four minutes after the slot rounds up' => ['18:04:00', '19:59:00', 1.0],
+    'ending before the next half hour rounds down to one hour' => ['18:00:00', '19:29:00', 1.0],
+    'ending three minutes after the half hour rounds down' => ['18:00:00', '19:03:00', 1.0],
+]);
+
 it('doubles regular and overtime hours on holiday pay dates', function () {
     $result = (new AttendanceTimeCalculator)->calculate(
         attendanceTimeSchedule('2026-11-19', holidayPay: true),
@@ -75,6 +100,47 @@ it('doubles regular and overtime hours on holiday pay dates', function () {
         ->holiday_worked_hours->toBe(16.0)
         ->holiday_overtime_hours->toBe(3.0);
 });
+
+it('counts security regular hours by day type and overtime after twelve hours on weekdays', function (
+    string $checkIn,
+    string $checkOut,
+    float $expectedWorkedHours,
+    float $expectedOvertimeHours,
+) {
+    $attendanceDate = CarbonImmutable::parse($checkIn)->startOfDay();
+    $isSaturday = $attendanceDate->isSaturday();
+    $schedule = new AttendanceSchedule(
+        profile: 'security',
+        profileLabel: 'Security',
+        shift: 'day',
+        expectedCheckIn: CarbonImmutable::parse($checkIn),
+        expectedCheckOut: CarbonImmutable::parse($checkOut),
+        standardWorkHours: $isSaturday ? 6 : 8,
+        isHolidayPay: false,
+        holidayName: null,
+        expectedPunchCount: 2,
+        requiresReview: false,
+        breakHours: $isSaturday ? 1 : 0,
+    );
+    $result = (new AttendanceTimeCalculator)->calculate(
+        $schedule,
+        [
+            attendancePunch($checkIn),
+            null,
+            null,
+            attendancePunch($checkOut),
+        ],
+    );
+
+    expect($result)
+        ->worked_hours->toBe($expectedWorkedHours)
+        ->overtime_hours->toBe($expectedOvertimeHours);
+})->with([
+    'twelve hour shift' => ['2026-11-19 08:00:00', '2026-11-19 20:00:00', 8.0, 0.0],
+    'eight hour saturday day shift' => ['2026-11-21 08:00:00', '2026-11-21 16:00:00', 6.0, 1.0],
+    'seven hour saturday night shift' => ['2026-11-21 17:00:00', '2026-11-22 00:00:00', 6.0, 0.0],
+    'eight hour saturday night shift' => ['2026-11-21 17:00:00', '2026-11-22 01:00:00', 6.0, 1.0],
+]);
 
 it('rounds actual worked hours down to the nearest half hour', function () {
     $result = (new AttendanceTimeCalculator)->calculate(

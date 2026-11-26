@@ -10,6 +10,7 @@ import EmptyState from "@/Components/Admin/EmptyState.vue";
 import AttendanceCleanupPanel from "@/Components/Admin/DeveloperSettings/AttendanceCleanupPanel.vue";
 import CalendarOverridePanel from "@/Components/Admin/DeveloperSettings/CalendarOverridePanel.vue";
 import NationalHolidayPanel from "@/Components/Admin/DeveloperSettings/NationalHolidayPanel.vue";
+import ServerHealthMonitor from "@/Components/Admin/DeveloperSettings/ServerHealthMonitor.vue";
 import SpecialWorkSchedulePanel from "@/Components/Admin/DeveloperSettings/SpecialWorkSchedulePanel.vue";
 
 const props = defineProps({
@@ -30,6 +31,7 @@ const props = defineProps({
     workCalendarOptions: { type: Object, required: true },
     counts: { type: Object, required: true },
     adminSalaryLimit: { type: Number, required: true },
+    attendanceToleranceMinutes: { type: Number, required: true },
 });
 
 const confirm = useConfirm();
@@ -45,6 +47,9 @@ const mappingReviewed = ref(false);
 const salaryLimitForm = useForm({
     admin_salary_limit: props.adminSalaryLimit,
 });
+const attendanceToleranceForm = useForm({
+    attendance_tolerance_minutes: props.attendanceToleranceMinutes,
+});
 
 const resourceVisuals = {
     companies: { label: "Company", caption: "Entitas perusahaan", icon: "pi pi-building" },
@@ -56,6 +61,7 @@ const resourceVisuals = {
 };
 
 const navigationItems = computed(() => [
+    { value: "server-health", section: "server-health", label: "Server Health", caption: "SSE on-demand", icon: "pi pi-server" },
     { value: "import", section: "import", label: "Copy Karyawan", caption: "Mapping & migrasi", icon: "pi pi-cloud-download" },
     { value: "holidays", section: "holidays", label: "Hari Libur", caption: "Kalender nasional", icon: "pi pi-calendar" },
     { value: "calendar-overrides", section: "calendar-overrides", label: "Pengecualian Kalender", caption: "Libur per company", icon: "pi pi-calendar-clock" },
@@ -139,6 +145,13 @@ function saveSalaryLimit() {
     salaryLimitForm.put(route("admin.developer-settings.admin-salary-limit.update"), {
         preserveScroll: true,
     });
+}
+
+function saveAttendanceTolerance() {
+    attendanceToleranceForm.put(
+        route("admin.developer-settings.attendance-tolerance.update"),
+        { preserveScroll: true },
+    );
 }
 
 function openCreate() {
@@ -390,6 +403,31 @@ function copyMasterData() {
                 </template>
             </Card>
 
+            <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
+                <template #title>
+                    <div class="px-1">
+                        <h2 class="text-base font-bold text-slate-950 dark:text-white">Toleransi keterlambatan attendance</h2>
+                        <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">
+                            Toleransi hanya berlaku untuk first in, second in, dan overtime in. Seluruh punch out tidak memiliki toleransi.
+                        </p>
+                    </div>
+                </template>
+                <template #content>
+                    <form class="flex flex-col gap-3 sm:flex-row sm:items-end" @submit.prevent="saveAttendanceTolerance">
+                        <FormField label="Toleransi punch masuk (menit)" :error="attendanceToleranceForm.errors.attendance_tolerance_minutes" class="flex-1" required>
+                            <InputNumber
+                                v-model="attendanceToleranceForm.attendance_tolerance_minutes"
+                                :min="0"
+                                :max="120"
+                                class="w-full"
+                                input-class="w-full"
+                            />
+                        </FormField>
+                        <Button type="submit" label="Simpan toleransi" icon="pi pi-check" severity="danger" :loading="attendanceToleranceForm.processing" />
+                    </form>
+                </template>
+            </Card>
+
             <nav class="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200/80 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:grid-cols-3 xl:grid-cols-8" aria-label="Navigasi Developer Settings">
                 <Button
                     v-for="item in navigationItems"
@@ -409,6 +447,10 @@ function copyMasterData() {
                     </span>
                 </Button>
             </nav>
+
+            <section v-if="section === 'server-health'" class="space-y-4">
+                <ServerHealthMonitor />
+            </section>
 
             <section v-show="section === 'holidays'" class="space-y-4">
                 <NationalHolidayPanel :holidays="nationalHolidays" />

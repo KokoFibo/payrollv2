@@ -10,14 +10,17 @@ use App\Models\Department;
 use App\Models\Directorate;
 use App\Models\Jabatan;
 use App\Models\Karyawan;
+use App\Support\Attendance\AttendanceAnomalyScanner;
 use App\Support\Attendance\AttendanceRecordEditor;
 use App\Support\Attendance\NationalHolidayResolver;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -43,6 +46,7 @@ class AttendanceController extends Controller
         'holiday_overtime_hours' => 'attendance_records.holiday_overtime_hours',
         'notes' => 'attendance_records.notes',
         'has_missing_punch' => 'attendance_records.has_missing_punch',
+        'monthly_review_count' => 'monthly_review_count',
     ];
 
     public function index(
@@ -183,6 +187,46 @@ class AttendanceController extends Controller
         ]);
     }
 
+    public function scanAnomalies(
+        Request $request,
+        AttendanceAnomalyScanner $scanner,
+    ): JsonResponse {
+        Gate::authorize('manage-payroll');
+
+        $validated = $request->validate([
+            'start_date' => ['required', 'date'],
+            'end_date' => ['required', 'date', 'after_or_equal:start_date'],
+            'short_work_minutes' => ['nullable', 'integer', 'between:0,1440'],
+            'long_work_minutes' => ['nullable', 'integer', 'between:0,1440'],
+            'overtime_threshold_hours' => ['nullable', 'numeric', 'between:0,24'],
+        ]);
+        $startsOn = CarbonImmutable::parse($validated['start_date'])->startOfDay();
+        $endsOn = CarbonImmutable::parse($validated['end_date'])->startOfDay();
+        $rangeDays = (int) $startsOn->diffInDays($endsOn) + 1;
+        $maxRangeDays = (int) config('attendance.anomaly_scan.max_range_days', 31);
+
+        if ($rangeDays > $maxRangeDays) {
+            throw ValidationException::withMessages([
+                'end_date' => "Rentang scan maksimal {$maxRangeDays} hari.",
+            ]);
+        }
+
+        return response()->json($scanner->scan($startsOn, $endsOn, [
+            'short_work_minutes' => (int) (
+                $validated['short_work_minutes']
+                ?? config('attendance.anomaly_scan.short_work_minutes', 60)
+            ),
+            'long_work_minutes' => (int) (
+                $validated['long_work_minutes']
+                ?? config('attendance.anomaly_scan.long_work_minutes', 120)
+            ),
+            'overtime_threshold_hours' => (float) (
+                $validated['overtime_threshold_hours']
+                ?? config('attendance.anomaly_scan.overtime_threshold_hours', 4)
+            ),
+        ]));
+    }
+
     public function update(Request $request, AttendanceRecord $attendance): RedirectResponse
     {
         Gate::authorize('manage-payroll');
@@ -210,6 +254,35 @@ class AttendanceController extends Controller
             'type' => 'success',
             'title' => 'Absensi dihapus',
             'message' => 'Catatan absensi berhasil dihapus.',
+        ]);
+    }
+
+    public function destroyReview(
+        Request $request,
+        AttendanceRecord $attendance,
+    ): RedirectResponse {
+        Gate::authorize('manage-payroll');
+
+        if (! $attendance->requires_review) {
+            return back()->with('toast', [
+                'type' => 'info',
+                'title' => 'Review sudah dihapus',
+                'message' => 'Attendance ini tidak memiliki status review aktif.',
+            ]);
+        }
+
+        $attendance->loadMissing('karyawan:id,nama');
+        $attendance->update([
+            'requires_review' => false,
+            'review_resolved_at' => now(),
+            'review_resolved_by' => $request->user()->id,
+            'review_resolution_note' => 'Review dihapus manual oleh admin.',
+        ]);
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'title' => 'Review dihapus',
+            'message' => "Review attendance {$attendance->karyawan->nama} berhasil dihapus tanpa mengubah punch.",
         ]);
     }
 
@@ -254,12 +327,17 @@ class AttendanceController extends Controller
                 'jabatan:id,name',
             ])
             ->findOrFail($validated['karyawan_id']);
+        $existingRecord = AttendanceRecord::query()
+            ->where('karyawan_id', $employee->id)
+            ->whereDate('attendance_date', $validated['attendance_date'])
+            ->first();
         $recordEditor->save(
             $employee,
             CarbonImmutable::parse($validated['attendance_date']),
             $validated['status'],
             $validated,
             $request->user()->id,
+            $existingRecord,
         );
 
         return back()->with('toast', [
@@ -282,6 +360,7 @@ class AttendanceController extends Controller
             'status_label' => AttendanceRecord::STATUSES[$record->status] ?? $record->status,
             'first_in' => $this->shortTime($record->first_in),
             'first_out' => $this->shortTime($record->first_out),
+            'first_out_day_offset' => $record->first_out_day_offset,
             'second_in' => $this->shortTime($record->second_in),
             'second_out' => $this->shortTime($record->second_out),
             'overtime_in' => $this->shortTime($record->overtime_in),
@@ -328,6 +407,14 @@ class AttendanceController extends Controller
             'has_duplicate_punch' => $record->has_duplicate_punch,
             'requires_review' => $record->requires_review,
             'comparison_notes' => $record->comparison_notes,
+            'review_resolved_at' => $record->review_resolved_at?->toISOString(),
+            'review_resolved_by' => $record->reviewResolvedBy?->name,
+            'review_resolution_note' => $record->review_resolution_note,
+            'monthly_review_count' => (int) ($record->monthly_review_count ?? 0),
+            'review_penalty_hours' => max(
+                0,
+                (int) ($record->monthly_review_count ?? 0) - 3,
+            ),
             'notes' => $record->notes,
             'employee' => [
                 'id' => $record->karyawan->id,
@@ -353,9 +440,19 @@ class AttendanceController extends Controller
         string $sort,
         string $direction,
     ): Builder {
+        $monthStart = CarbonImmutable::parse($attendanceDate)->startOfMonth()->toDateString();
+        $monthEnd = CarbonImmutable::parse($attendanceDate)->endOfMonth()->toDateString();
+        $monthlyReviewCount = AttendanceRecord::query()
+            ->from('attendance_records as monthly_reviews')
+            ->selectRaw('COUNT(*)')
+            ->whereColumn('monthly_reviews.karyawan_id', 'attendance_records.karyawan_id')
+            ->where('monthly_reviews.requires_review', true)
+            ->whereBetween('monthly_reviews.attendance_date', [$monthStart, $monthEnd]);
+
         return $this->dayQuery($attendanceDate)
             ->leftJoin('karyawans as employees', 'employees.id', '=', 'attendance_records.karyawan_id')
             ->select('attendance_records.*')
+            ->selectSub($monthlyReviewCount, 'monthly_review_count')
             ->with([
                 'karyawan:id,nip,nama,company_id,directorate_id,department_id,jabatan_id',
                 'karyawan.company:id,name',
@@ -363,6 +460,7 @@ class AttendanceController extends Controller
                 'karyawan.department:id,name',
                 'karyawan.jabatan:id,name',
                 'calendarOverride:id,name',
+                'reviewResolvedBy:id,name',
             ])
             ->when($status !== '', fn (Builder $query) => $query->where('attendance_records.status', $status))
             ->when($lateOnly, fn (Builder $query) => $query->where('attendance_records.late_minutes', '>', 3))
@@ -501,7 +599,7 @@ class AttendanceController extends Controller
     {
         $slots = [
             ['label' => 'Masuk 1', 'time' => $this->shortTime($record->first_in), 'day_offset' => 0],
-            ['label' => 'Keluar 1', 'time' => $this->shortTime($record->first_out), 'day_offset' => 0],
+            ['label' => 'Keluar 1', 'time' => $this->shortTime($record->first_out), 'day_offset' => $record->first_out_day_offset],
             ['label' => 'Masuk 2', 'time' => $this->shortTime($record->second_in), 'day_offset' => $record->second_in_day_offset],
             ['label' => 'Keluar 2', 'time' => $this->shortTime($record->second_out), 'day_offset' => $record->second_out_day_offset],
             ['label' => 'Masuk OT', 'time' => $this->shortTime($record->overtime_in), 'day_offset' => $record->overtime_in_day_offset],

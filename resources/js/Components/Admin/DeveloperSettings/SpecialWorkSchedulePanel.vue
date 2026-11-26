@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { router, useForm } from "@inertiajs/vue3";
 import { useConfirm } from "primevue/useconfirm";
 import FormField from "@/Components/Admin/FormField.vue";
@@ -12,7 +12,9 @@ const props = defineProps({
 
 const confirm = useConfirm();
 const dialogVisible = ref(false);
+const periodDialogVisible = ref(false);
 const editingSchedule = ref(null);
+const selectedPeriodKey = ref(null);
 const form = useForm({
     name: "",
     company_id: null,
@@ -28,6 +30,37 @@ const form = useForm({
     expected_punch_count: 4,
     notes: "",
 });
+const periodForm = useForm({
+    name: "",
+    starts_on: "",
+    ends_on: "",
+    schedules: defaultPeriodSchedules(),
+});
+const periodGroups = computed(() => {
+    const groups = new Map();
+
+    for (const schedule of props.schedules) {
+        if (
+            schedule.company_id
+            || schedule.directorate_id
+            || schedule.department_id
+            || schedule.day_type
+        ) {
+            continue;
+        }
+
+        const value = `${schedule.name}|${schedule.starts_on}|${schedule.ends_on}`;
+        groups.set(value, {
+            value,
+            label: `${schedule.name} (${formatDate(schedule.starts_on)} - ${formatDate(schedule.ends_on)})`,
+            name: schedule.name,
+            starts_on: schedule.starts_on,
+            ends_on: schedule.ends_on,
+        });
+    }
+
+    return [...groups.values()];
+});
 
 function openCreate() {
     editingSchedule.value = null;
@@ -40,6 +73,142 @@ function openCreate() {
     form.standard_work_hours = 8;
     form.expected_punch_count = 4;
     dialogVisible.value = true;
+}
+
+function defaultPeriodSchedules() {
+    return [
+        {
+            enabled: false,
+            label: "Produksi / Umum - Shift pagi",
+            schedule_profile: "general",
+            shift: "day",
+            check_in: "08:00",
+            check_out: "17:00",
+            check_out_day_offset: 0,
+            standard_work_hours: 8,
+            expected_punch_count: 4,
+        },
+        {
+            enabled: false,
+            label: "Produksi / Umum - Shift malam",
+            schedule_profile: "general",
+            shift: "night",
+            check_in: "20:00",
+            check_out: "05:00",
+            check_out_day_offset: 1,
+            standard_work_hours: 8,
+            expected_punch_count: 4,
+        },
+        {
+            enabled: false,
+            label: "Security - Shift pagi",
+            schedule_profile: "security",
+            shift: "day",
+            check_in: "08:00",
+            check_out: "20:00",
+            check_out_day_offset: 0,
+            standard_work_hours: 8,
+            expected_punch_count: 2,
+        },
+        {
+            enabled: false,
+            label: "Security - Shift malam",
+            schedule_profile: "security",
+            shift: "night",
+            check_in: "20:00",
+            check_out: "08:00",
+            check_out_day_offset: 1,
+            standard_work_hours: 8,
+            expected_punch_count: 2,
+        },
+        {
+            enabled: false,
+            label: "QC Aging - Shift pagi",
+            schedule_profile: "qc_aging",
+            shift: "day",
+            check_in: "08:00",
+            check_out: "17:00",
+            check_out_day_offset: 0,
+            standard_work_hours: 8,
+            expected_punch_count: 4,
+        },
+        {
+            enabled: false,
+            label: "QC Aging - Shift malam",
+            schedule_profile: "qc_aging",
+            shift: "night",
+            check_in: "20:00",
+            check_out: "05:00",
+            check_out_day_offset: 1,
+            standard_work_hours: 8,
+            expected_punch_count: 4,
+        },
+    ];
+}
+
+function openPeriodCreate() {
+    selectedPeriodKey.value = null;
+    periodForm.reset();
+    periodForm.clearErrors();
+    periodForm.name = "";
+    periodForm.starts_on = "";
+    periodForm.ends_on = "";
+    periodForm.schedules = defaultPeriodSchedules();
+    periodDialogVisible.value = true;
+}
+
+function selectPeriod(value) {
+    selectedPeriodKey.value = value;
+
+    if (!value) {
+        return;
+    }
+
+    const period = periodGroups.value.find((item) => item.value === value);
+
+    if (!period) {
+        return;
+    }
+
+    periodForm.name = period.name;
+    periodForm.starts_on = period.starts_on;
+    periodForm.ends_on = period.ends_on;
+    periodForm.schedules = defaultPeriodSchedules().map((row) => {
+        const existing = props.schedules.find((schedule) => (
+            schedule.name === period.name
+            && schedule.starts_on === period.starts_on
+            && schedule.ends_on === period.ends_on
+            && schedule.schedule_profile === row.schedule_profile
+            && schedule.shift === row.shift
+            && !schedule.company_id
+            && !schedule.directorate_id
+            && !schedule.department_id
+            && !schedule.day_type
+        ));
+
+        if (!existing) {
+            return row;
+        }
+
+        return {
+            ...row,
+            enabled: true,
+            check_in: existing.check_in,
+            check_out: existing.check_out,
+            check_out_day_offset: existing.check_out_day_offset,
+            standard_work_hours: existing.standard_work_hours,
+            expected_punch_count: existing.expected_punch_count,
+        };
+    });
+}
+
+function savePeriod() {
+    periodForm.post(route("admin.developer-settings.special-work-schedules.bulk"), {
+        preserveScroll: true,
+        onSuccess: () => {
+            periodDialogVisible.value = false;
+        },
+    });
 }
 
 function openEdit(schedule) {
@@ -116,7 +285,10 @@ function formatDate(value) {
                         Aturan paling spesifik akan diprioritaskan saat import maupun edit absensi langsung.
                     </p>
                 </div>
-                <Button label="Tambah jadwal" icon="pi pi-plus" @click="openCreate" />
+                <div class="flex flex-wrap gap-2">
+                    <Button label="Atur jadwal serentak" icon="pi pi-calendar-plus" severity="secondary" outlined @click="openPeriodCreate" />
+                    <Button label="Tambah jadwal" icon="pi pi-plus" @click="openCreate" />
+                </div>
             </div>
         </template>
         <template #content>
@@ -229,6 +401,117 @@ function formatDate(value) {
             <div class="flex justify-end gap-2 pt-2">
                 <Button type="button" label="Batal" severity="secondary" text @click="dialogVisible = false" />
                 <Button type="submit" label="Simpan jadwal" icon="pi pi-check" :loading="form.processing" />
+            </div>
+        </form>
+    </Dialog>
+
+    <Dialog v-model:visible="periodDialogVisible" modal header="Atur jadwal serentak" class="w-full max-w-5xl">
+        <form class="space-y-5" @submit.prevent="savePeriod">
+            <Message severity="info" :closable="false">
+                Jadwal ini berlaku untuk semua hari dan seluruh organisasi. Presensi yang sudah ada pada rentang tanggal tersebut akan dihitung ulang.
+            </Message>
+            <Message v-if="periodForm.errors.schedules" severity="error" :closable="false">
+                {{ periodForm.errors.schedules }}
+            </Message>
+
+            <FormField label="Ubah periode yang sudah ada">
+                <Select
+                    v-model="selectedPeriodKey"
+                    :options="periodGroups"
+                    option-label="label"
+                    option-value="value"
+                    placeholder="Pilih periode atau buat periode baru"
+                    show-clear
+                    filter
+                    class="w-full"
+                    @update:model-value="selectPeriod"
+                />
+            </FormField>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+                <FormField label="Nama periode" :error="periodForm.errors.name" required>
+                    <InputText v-model="periodForm.name" class="w-full" placeholder="Contoh: Ramadan 2027" />
+                </FormField>
+                <div class="grid grid-cols-2 gap-4">
+                    <FormField label="Tanggal mulai" :error="periodForm.errors.starts_on" required>
+                        <InputText v-model="periodForm.starts_on" type="date" class="w-full" />
+                    </FormField>
+                    <FormField label="Tanggal selesai" :error="periodForm.errors.ends_on" required>
+                        <InputText v-model="periodForm.ends_on" type="date" class="w-full" />
+                    </FormField>
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div
+                    v-for="(schedule, index) in periodForm.schedules"
+                    :key="`${schedule.schedule_profile}-${schedule.shift}`"
+                    class="rounded-2xl border p-4 transition"
+                    :class="schedule.enabled
+                        ? 'border-brand-200 bg-brand-50/40 dark:border-brand-500/20 dark:bg-brand-500/5'
+                        : 'border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/30'"
+                >
+                    <div class="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                        <label class="flex min-w-48 cursor-pointer items-center gap-3">
+                            <Checkbox v-model="schedule.enabled" binary />
+                            <span>
+                                <span class="block text-sm font-semibold text-slate-800 dark:text-slate-100">{{ schedule.label }}</span>
+                                <span class="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">Aktifkan untuk mengubah shift ini</span>
+                            </span>
+                        </label>
+
+                        <div class="grid flex-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                            <FormField label="Masuk" :error="periodForm.errors[`schedules.${index}.check_in`]">
+                                <InputText v-model="schedule.check_in" type="time" class="w-full" :disabled="!schedule.enabled" />
+                            </FormField>
+                            <FormField label="Keluar" :error="periodForm.errors[`schedules.${index}.check_out`]">
+                                <InputText v-model="schedule.check_out" type="time" class="w-full" :disabled="!schedule.enabled" />
+                            </FormField>
+                            <FormField label="Akhir shift">
+                                <Select
+                                    v-model="schedule.check_out_day_offset"
+                                    :options="[
+                                        { value: 0, label: 'Hari sama' },
+                                        { value: 1, label: '+1 hari' },
+                                        { value: 2, label: '+2 hari' },
+                                    ]"
+                                    option-label="label"
+                                    option-value="value"
+                                    class="w-full"
+                                    :disabled="!schedule.enabled"
+                                />
+                            </FormField>
+                            <FormField label="Jam reguler">
+                                <InputNumber
+                                    v-model="schedule.standard_work_hours"
+                                    :min="0.5"
+                                    :max="24"
+                                    :step="0.5"
+                                    :min-fraction-digits="0"
+                                    :max-fraction-digits="1"
+                                    class="w-full"
+                                    input-class="w-full"
+                                    :disabled="!schedule.enabled"
+                                />
+                            </FormField>
+                            <FormField label="Jumlah punch">
+                                <InputNumber
+                                    v-model="schedule.expected_punch_count"
+                                    :min="0"
+                                    :max="6"
+                                    class="w-full"
+                                    input-class="w-full"
+                                    :disabled="!schedule.enabled"
+                                />
+                            </FormField>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end gap-2">
+                <Button type="button" label="Batal" severity="secondary" text @click="periodDialogVisible = false" />
+                <Button type="submit" label="Simpan dan hitung ulang" icon="pi pi-check" :loading="periodForm.processing" />
             </div>
         </form>
     </Dialog>

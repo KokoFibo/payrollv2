@@ -38,19 +38,21 @@ const navigation = computed(() => {
         items.push({ label: "Settings", routeName: "admin.settings.index", icon: "pi pi-cog" });
     }
 
+    if (page.props.auth?.can?.manageUsers) {
+        items.push({
+            label: "Users",
+            routeName: "admin.users.index",
+            icon: "pi pi-user-edit",
+        });
+    }
+
+    items.push({ label: "Panduan", routeName: "admin.guide.index", icon: "pi pi-book" });
+
     if (page.props.auth?.can?.developer) {
         items.push({
             label: "Developer",
             routeName: "admin.developer-settings.index",
             icon: "pi pi-code",
-        });
-    }
-
-    if (page.props.auth?.can?.manageUsers) {
-        items.splice(items.length - (page.props.auth?.can?.developer ? 1 : 0), 0, {
-            label: "Users",
-            routeName: "admin.users.index",
-            icon: "pi pi-user-edit",
         });
     }
 

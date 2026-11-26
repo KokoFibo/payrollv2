@@ -295,7 +295,8 @@ test('attendance skips employees without punch and updates an incomplete row inl
         ->overtime_out->toBe('20:06:00')
         ->worked_hours->toBe('8.0')
         ->overtime_hours->toBe('2.0')
-        ->requires_review->toBeFalse();
+        ->requires_review->toBeTrue()
+        ->comparison_notes->toContain('Punch keluar reguler (second out) belum tersedia.');
 });
 
 test('inline edit recalculates holiday pay from the employee company calendar', function (
@@ -356,3 +357,205 @@ test('inline edit recalculates holiday pay from the employee company calendar', 
     'company treats the holiday as a normal Friday' => [false, '7.5', '0.0'],
     'company keeps global holiday pay' => [true, '0.0', '16.0'],
 ]);
+
+test('correcting punches recalculates hours but keeps review for admin resolution', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Production']);
+    $jabatan = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+    AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'first_in' => '08:10:00',
+        'late_minutes' => 10,
+        'late_penalty_hours' => 1,
+        'has_missing_punch' => true,
+        'requires_review' => true,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '11:30',
+            'second_in' => '12:30',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-19')
+        ->firstOrFail();
+
+    expect($record)
+        ->late_minutes->toBe(0)
+        ->late_penalty_hours->toBeNull()
+        ->worked_hours->toBe('8.0')
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeTrue()
+        ->comparison_notes->toContain('Status review dipertahankan sampai admin menghapusnya secara manual.')
+        ->review_resolved_at->toBeNull();
+});
+
+test('inline edit marks an early break out as late', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Production']);
+    $jabatan = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+        'metode_penggajian' => 'Per Jam',
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '11:29',
+            'second_in' => '12:30',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-19')
+        ->firstOrFail();
+
+    expect($record)
+        ->status->toBe('late')
+        ->late_minutes->toBe(1)
+        ->late_penalty_hours->toBe(1)
+        ->comparison_notes->toContain('Keluar istirahat 1 menit lebih awal.');
+});
+
+test('inline edit reviews attendance when only one break punch exists', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '11:30',
+            'second_in' => null,
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->firstOrFail();
+
+    expect($record)
+        ->requires_review->toBeTrue()
+        ->has_missing_punch->toBeTrue()
+        ->comparison_notes->toContain('Pasangan keluar dan masuk istirahat tidak lengkap.');
+});
+
+test('inline edit reviews attendance when only one overtime punch exists', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '11:30',
+            'second_in' => '12:30',
+            'second_out' => '17:00',
+            'overtime_in' => '18:00',
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->firstOrFail();
+
+    expect($record)
+        ->requires_review->toBeTrue()
+        ->has_missing_punch->toBeTrue()
+        ->comparison_notes->toContain('Pasangan masuk dan keluar lembur tidak lengkap.');
+});
+
+test('admin can clear review without changing attendance punches', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+    $record = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'first_in' => '08:00:00',
+        'requires_review' => true,
+        'comparison_notes' => 'Punch keluar belum lengkap.',
+    ]);
+
+    $this->actingAs($admin)
+        ->delete(route('admin.attendance.destroy-review', $record))
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeFalse()
+        ->first_in->toBe('08:00:00')
+        ->comparison_notes->toBe('Punch keluar belum lengkap.')
+        ->review_resolved_at->not->toBeNull()
+        ->review_resolved_by->toBe($admin->id)
+        ->review_resolution_note->toBe('Review dihapus manual oleh admin.');
+});
+
+test('attendance shows monthly review count and penalty after three reviews', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create(['nama' => 'Monthly Review Employee']);
+
+    foreach (range(2, 5) as $day) {
+        AttendanceRecord::factory()->for($employee)->create([
+            'attendance_date' => "2026-11-0{$day}",
+            'requires_review' => true,
+        ]);
+    }
+
+    AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-06',
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+        'review_resolution_note' => 'Sudah diperiksa.',
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-05']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.monthly_review_count', 4)
+            ->where('records.data.0.review_penalty_hours', 1));
+});
+
+test('non admin cannot clear attendance review', function () {
+    $user = User::factory()->create(['role' => 4]);
+    $record = AttendanceRecord::factory()->create([
+        'requires_review' => true,
+    ]);
+
+    $this->actingAs($user)
+        ->delete(route('admin.attendance.destroy-review', $record))
+        ->assertForbidden();
+
+    expect($record->refresh()->requires_review)->toBeTrue();
+});

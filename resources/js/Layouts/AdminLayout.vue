@@ -16,6 +16,7 @@ const currentTitle = computed(() => {
     const routeName = route().current();
     const titles = {
         "admin.dashboard": "Dashboard",
+        "admin.guide.index": "Panduan",
         "admin.super-admin-dashboard.index": "Super Admin",
         "admin.employees.index": "Employees",
         "admin.employees.create": "Tambah Karyawan",

@@ -7,11 +7,14 @@ use App\Http\Controllers\Admin\CalendarOverrideController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeveloperSettingsController;
 use App\Http\Controllers\Admin\EmployeeController;
+use App\Http\Controllers\Admin\GuideController;
 use App\Http\Controllers\Admin\MasterDataController;
 use App\Http\Controllers\Admin\NationalHolidayController;
 use App\Http\Controllers\Admin\PayrollController;
 use App\Http\Controllers\Admin\ReportController;
+use App\Http\Controllers\Admin\ServerHealthController;
 use App\Http\Controllers\Admin\SettingController;
+use App\Http\Controllers\Admin\SpecialWorkScheduleBulkController;
 use App\Http\Controllers\Admin\SpecialWorkScheduleController;
 use App\Http\Controllers\Admin\SuperAdminDashboardController;
 use App\Http\Controllers\Admin\UserController;
@@ -33,6 +36,7 @@ Route::middleware('auth')->group(function () {
 
 Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(function () {
     Route::get('/', DashboardController::class)->name('dashboard');
+    Route::get('/panduan', GuideController::class)->name('guide.index');
 
     Route::get('/employees', [EmployeeController::class, 'index'])->name('employees.index');
     Route::get('/employees/export', [EmployeeController::class, 'export'])
@@ -51,10 +55,12 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
 
     Route::prefix('attendance')->name('attendance.')->group(function () {
         Route::get('/', [AttendanceController::class, 'index'])->name('index');
+        Route::get('/anomalies', [AttendanceController::class, 'scanAnomalies'])->name('anomalies');
         Route::post('/import', [AttendanceImportController::class, 'store'])->name('import');
         Route::post('/', [AttendanceController::class, 'store'])->name('store');
         Route::delete('/day', [AttendanceController::class, 'destroyDay'])->name('destroy-day');
         Route::put('/inline', [AttendanceController::class, 'updateInline'])->name('update-inline');
+        Route::delete('/{attendance}/review', [AttendanceController::class, 'destroyReview'])->name('destroy-review');
         Route::put('/{attendance}', [AttendanceController::class, 'update'])->name('update');
         Route::delete('/{attendance}', [AttendanceController::class, 'destroy'])->name('destroy');
     });
@@ -94,6 +100,8 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
     Route::middleware('can:access-developer-settings')->group(function () {
         Route::get('/developer-settings', [DeveloperSettingsController::class, 'index'])
             ->name('developer-settings.index');
+        Route::get('/developer-settings/server-health/stream', ServerHealthController::class)
+            ->name('developer-settings.server-health.stream');
         Route::post('/developer-settings/migrate', [DeveloperSettingsController::class, 'copy'])
             ->name('developer-settings.copy');
         Route::post('/developer-settings/copy-master-data', [DeveloperSettingsController::class, 'copyMasterData'])
@@ -114,12 +122,16 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
             ->name('developer-settings.calendar-overrides.destroy');
         Route::post('/developer-settings/special-work-schedules', [SpecialWorkScheduleController::class, 'store'])
             ->name('developer-settings.special-work-schedules.store');
+        Route::post('/developer-settings/special-work-schedules/bulk', SpecialWorkScheduleBulkController::class)
+            ->name('developer-settings.special-work-schedules.bulk');
         Route::put('/developer-settings/special-work-schedules/{specialWorkSchedule}', [SpecialWorkScheduleController::class, 'update'])
             ->name('developer-settings.special-work-schedules.update');
         Route::delete('/developer-settings/special-work-schedules/{specialWorkSchedule}', [SpecialWorkScheduleController::class, 'destroy'])
             ->name('developer-settings.special-work-schedules.destroy');
         Route::put('/developer-settings/admin-salary-limit', [DeveloperSettingsController::class, 'updateAdminSalaryLimit'])
             ->name('developer-settings.admin-salary-limit.update');
+        Route::put('/developer-settings/attendance-tolerance', [DeveloperSettingsController::class, 'updateAttendanceTolerance'])
+            ->name('developer-settings.attendance-tolerance.update');
         Route::post('/developer-settings/master/{resource}', [MasterDataController::class, 'store'])
             ->name('developer-settings.master.store');
         Route::put('/developer-settings/master/{resource}/{record}', [MasterDataController::class, 'update'])

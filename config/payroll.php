@@ -44,11 +44,6 @@ return [
                 'value' => '08:00',
                 'type' => 'string',
             ],
-            'late_tolerance_minutes' => [
-                'label' => 'Toleransi Keterlambatan',
-                'value' => '15',
-                'type' => 'integer',
-            ],
         ],
     ],
 ];

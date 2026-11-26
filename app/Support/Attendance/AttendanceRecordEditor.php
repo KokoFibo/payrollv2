@@ -5,13 +5,13 @@ namespace App\Support\Attendance;
 use App\Models\AttendanceRecord;
 use App\Models\Karyawan;
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Str;
 
 class AttendanceRecordEditor
 {
     public function __construct(
         private AttendanceScheduleResolver $scheduleResolver,
         private AttendanceTimeCalculator $timeCalculator,
+        private AttendanceLatenessCalculator $latenessCalculator,
     ) {}
 
     /**
@@ -77,29 +77,44 @@ class AttendanceRecordEditor
         );
         $timeSummary = $this->timeCalculator->calculate($schedule, $punches);
         $lastPunch = collect($slots)->filter()->last()['punched_at'] ?? null;
-        $lateMinutes = max(
-            0,
-            (int) round(
-                ($firstPunch->getTimestamp() - $schedule->expectedCheckIn->getTimestamp()) / 60,
-            ),
+        $lateness = $this->latenessCalculator->calculate(
+            $schedule,
+            $slots['first_in']['punched_at'] ?? null,
+            $slots['first_out']['punched_at'] ?? null,
+            $slots['second_in']['punched_at'] ?? null,
+            $slots['second_out']['punched_at'] ?? null,
         );
-        $isLate = $lateMinutes > (int) config('attendance.tolerance_minutes', 3);
+        $lateMinutes = $lateness['total_minutes'];
+        $isLate = $lateness['is_late'];
+        $calculatedStatus = $isLate && in_array($status, ['present', 'remote'], true)
+            ? 'late'
+            : $status;
         $presentSlotCount = collect($slots)->filter()->count();
         $rawPunchCount = $existingRecord?->raw_punch_count ?? $presentSlotCount;
         $duplicatePunchCount = $existingRecord?->duplicate_punch_count ?? 0;
         $ignoredPunchCount = $existingRecord?->ignored_punch_count ?? 0;
         $hasDuplicatePunch = $existingRecord?->has_duplicate_punch ?? false;
         $hasMissingPunch = $presentSlotCount > 0
-            ? $presentSlotCount < $schedule->expectedPunchCount
+            ? ! $this->timeCalculator->hasCompleteEntryAndExit($punches)
             : in_array($status, ['present', 'late', 'remote'], true);
+        $preservedReview = ($existingRecord?->requires_review ?? false)
+            && ! $hasMissingPunch
+            && ! $timeSummary['requires_review'];
+        $requiresReview = $preservedReview
+            || $hasMissingPunch
+            || $timeSummary['requires_review'];
         $earlyLeaveMinutes = $lastPunch !== null && ! $hasMissingPunch
             ? max(0, (int) round(
                 ($schedule->expectedCheckOut->getTimestamp() - $lastPunch->getTimestamp()) / 60,
             ))
             : 0;
-        $latePenaltyHours = $isLate && $this->isHourlyWorker($karyawan)
-            ? (int) ceil($lateMinutes / 60)
+        $latePenaltyHours = $lateness['penalty_hours'] > 0
+            ? $lateness['penalty_hours']
             : null;
+        $timeSummary = $this->timeCalculator->deductWorkHours(
+            $timeSummary,
+            $lateness['penalty_hours'],
+        );
         $comparisonNotes = [];
 
         if ($duplicatePunchCount > 0) {
@@ -107,14 +122,19 @@ class AttendanceRecordEditor
         }
 
         if ($ignoredPunchCount > 0) {
-            $comparisonNotes[] = "{$ignoredPunchCount} punch tambahan di luar enam slot diabaikan.";
+            $comparisonNotes[] = "{$ignoredPunchCount} punch tambahan diabaikan setelah pemetaan slot.";
         }
 
         $comparisonNotes = [
             ...$comparisonNotes,
+            ...$lateness['notes'],
             ...$timeSummary['notes'],
             ...$schedule->reviewNotes,
         ];
+
+        if ($preservedReview) {
+            $comparisonNotes[] = 'Status review dipertahankan sampai admin menghapusnya secara manual.';
+        }
 
         return AttendanceRecord::query()->updateOrCreate(
             [
@@ -122,11 +142,12 @@ class AttendanceRecordEditor
                 'attendance_date' => $attendanceDate->toDateString(),
             ],
             [
-                'status' => $status,
+                'status' => $calculatedStatus,
                 'shift' => $schedule->shift,
                 'schedule_profile' => $schedule->profile,
                 'first_in' => $this->slotTime($slots, 'first_in'),
                 'first_out' => $this->slotTime($slots, 'first_out'),
+                'first_out_day_offset' => $this->slotDayOffset($slots, 'first_out'),
                 'second_in' => $this->slotTime($slots, 'second_in'),
                 'second_out' => $this->slotTime($slots, 'second_out'),
                 'overtime_in' => $this->slotTime($slots, 'overtime_in'),
@@ -154,8 +175,16 @@ class AttendanceRecordEditor
                 'early_leave_minutes' => $earlyLeaveMinutes,
                 'has_missing_punch' => $hasMissingPunch,
                 'has_duplicate_punch' => $hasDuplicatePunch,
-                'requires_review' => $hasMissingPunch
-                    || $timeSummary['requires_review'],
+                'requires_review' => $requiresReview,
+                'review_resolved_at' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolved_at,
+                'review_resolved_by' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolved_by,
+                'review_resolution_note' => $requiresReview
+                    ? null
+                    : $existingRecord?->review_resolution_note,
                 'comparison_notes' => $comparisonNotes === []
                     ? null
                     : implode(' ', $comparisonNotes),
@@ -204,13 +233,5 @@ class AttendanceRecordEditor
     private function slotDayOffset(array $slots, string $slot): int
     {
         return isset($slots[$slot]) && $slots[$slot]['is_next_day'] ? 1 : 0;
-    }
-
-    private function isHourlyWorker(Karyawan $karyawan): bool
-    {
-        return Str::contains(
-            Str::lower((string) $karyawan->metode_penggajian),
-            ['per jam', 'hourly'],
-        );
     }
 }

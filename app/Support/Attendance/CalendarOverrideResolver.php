@@ -8,6 +8,11 @@ use Carbon\CarbonImmutable;
 
 class CalendarOverrideResolver
 {
+    /**
+     * @var array<string, CalendarOverride|null>
+     */
+    private array $cache = [];
+
     public function findFor(
         Karyawan $karyawan,
         CarbonImmutable $attendanceDate,
@@ -16,7 +21,18 @@ class CalendarOverrideResolver
             return null;
         }
 
-        return CalendarOverride::query()
+        $cacheKey = implode(':', [
+            $attendanceDate->toDateString(),
+            $karyawan->company_id,
+            $karyawan->directorate_id ?? '-',
+            $karyawan->department_id ?? '-',
+        ]);
+
+        if (array_key_exists($cacheKey, $this->cache)) {
+            return $this->cache[$cacheKey];
+        }
+
+        return $this->cache[$cacheKey] = CalendarOverride::query()
             ->whereDate('calendar_date', $attendanceDate->toDateString())
             ->where('company_id', $karyawan->company_id)
             ->where(function ($query) use ($karyawan): void {

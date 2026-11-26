@@ -24,7 +24,6 @@ test('admin can update application settings', function () {
             ],
             'attendance' => [
                 'work_start_time' => '08:00',
-                'late_tolerance_minutes' => 15,
             ],
         ])
         ->assertRedirect();

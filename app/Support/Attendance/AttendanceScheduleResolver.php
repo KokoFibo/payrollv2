@@ -32,10 +32,8 @@ class AttendanceScheduleResolver
             ?? ($isHolidayPay
                 ? 'sunday_thursday'
                 : $this->dayKey($attendanceDate));
-        $shift = $firstPunch->hour >= 17 || $firstPunch->hour < 5
-            ? 'night'
-            : 'day';
         $profileConfig = config("attendance.profiles.{$profile}");
+        $shift = $this->closestShift($profileConfig, $dayKey, $firstPunch);
         $shiftConfig = data_get($profileConfig, "days.{$dayKey}.{$shift}");
         $specialSchedule = $this->specialWorkScheduleResolver?->findFor(
             $profile,
@@ -86,21 +84,30 @@ class AttendanceScheduleResolver
             }
         }
 
+        $expectedCheckIn = $attendanceDate->setTimeFromTimeString(
+            $specialSchedule?->check_in ?? $shiftConfig['check_in'],
+        );
+        $expectedCheckOut = $attendanceDate
+            ->addDays($checkOutDayOffset)
+            ->setTimeFromTimeString($specialSchedule?->check_out ?? $shiftConfig['check_out']);
+        $standardWorkHours = (float) (
+            $specialSchedule?->standard_work_hours
+            ?? $shiftConfig['standard_hours']
+            ?? 8
+        );
+        $expectedGrossHours = ($expectedCheckOut->getTimestamp() - $expectedCheckIn->getTimestamp()) / 3600;
+        $breakHours = $specialSchedule === null
+            ? (float) ($shiftConfig['break_hours'] ?? max(0, $expectedGrossHours - $standardWorkHours))
+            : max(0, $expectedGrossHours - $standardWorkHours);
+        $breakWindow = $shiftConfig['break_window'] ?? null;
+
         return new AttendanceSchedule(
             profile: $profile,
             profileLabel: (string) $profileConfig['label'],
             shift: $shift,
-            expectedCheckIn: $attendanceDate->setTimeFromTimeString(
-                $specialSchedule?->check_in ?? $shiftConfig['check_in'],
-            ),
-            expectedCheckOut: $attendanceDate
-                ->addDays($checkOutDayOffset)
-                ->setTimeFromTimeString($specialSchedule?->check_out ?? $shiftConfig['check_out']),
-            standardWorkHours: (float) (
-                $specialSchedule?->standard_work_hours
-                ?? $shiftConfig['standard_hours']
-                ?? 8
-            ),
+            expectedCheckIn: $expectedCheckIn,
+            expectedCheckOut: $expectedCheckOut,
+            standardWorkHours: $standardWorkHours,
             isHolidayPay: $isHolidayPay,
             holidayName: $holidayName,
             expectedPunchCount: $specialSchedule?->expected_punch_count
@@ -109,7 +116,46 @@ class AttendanceScheduleResolver
             reviewNotes: $reviewNotes,
             calendarOverrideId: $calendarOverride?->id,
             calendarOverrideName: $calendarOverride?->name,
+            breakHours: $breakHours,
+            breakWindowStart: is_array($breakWindow) ? ($breakWindow[0] ?? null) : null,
+            breakWindowEnd: is_array($breakWindow) ? ($breakWindow[1] ?? null) : null,
+            specialScheduleName: $specialSchedule?->name,
+            breakRules: is_array($shiftConfig['break_rules'] ?? null)
+                ? $shiftConfig['break_rules']
+                : [],
         );
+    }
+
+    private function closestShift(
+        mixed $profileConfig,
+        string $dayKey,
+        CarbonImmutable $firstPunch,
+    ): string {
+        $firstPunchMinutes = ($firstPunch->hour * 60) + $firstPunch->minute;
+        $closestShift = 'day';
+        $closestDistance = null;
+
+        foreach (['day', 'night'] as $shift) {
+            $checkIn = data_get($profileConfig, "days.{$dayKey}.{$shift}.check_in");
+
+            if (! is_string($checkIn)) {
+                continue;
+            }
+
+            [$hour, $minute] = array_map('intval', explode(':', $checkIn, 2));
+            $checkInMinutes = ($hour * 60) + $minute;
+            $distance = abs($firstPunchMinutes - $checkInMinutes);
+
+            // Compare on a 24-hour circle so shifts crossing midnight remain valid.
+            $distance = min($distance, 1440 - $distance);
+
+            if ($closestDistance === null || $distance < $closestDistance) {
+                $closestShift = $shift;
+                $closestDistance = $distance;
+            }
+        }
+
+        return $closestShift;
     }
 
     private function profileFor(Karyawan $karyawan): string

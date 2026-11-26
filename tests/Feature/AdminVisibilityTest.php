@@ -162,6 +162,38 @@ test('developer settings exposes the salary masking limit', function () {
             ->where('adminSalaryLimit', 4_500_000));
 });
 
+test('developer can adjust the attendance tolerance', function () {
+    $developer = User::factory()->create(['role' => 8]);
+    AdminVisibilitySetting::factory()->create([
+        'id' => 1,
+        'attendance_tolerance_minutes' => 3,
+    ]);
+
+    $this->actingAs($developer)
+        ->put(route('admin.developer-settings.attendance-tolerance.update'), [
+            'attendance_tolerance_minutes' => 5,
+        ])
+        ->assertRedirect();
+
+    expect((int) AdminVisibilitySetting::query()->value('attendance_tolerance_minutes'))
+        ->toBe(5);
+});
+
+test('developer settings exposes the attendance tolerance', function () {
+    $developer = User::factory()->create(['role' => 8]);
+    AdminVisibilitySetting::factory()->create([
+        'id' => 1,
+        'attendance_tolerance_minutes' => 4,
+    ]);
+
+    $this->actingAs($developer)
+        ->get('/admin/developer-settings')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('DeveloperSettings/Index')
+            ->where('attendanceToleranceMinutes', 4));
+});
+
 test('admin cannot export employees but senior admin can', function (int $role, int $status) {
     $user = User::factory()->create(['role' => $role]);
     Karyawan::factory()->create(['nama' => 'Export Employee']);

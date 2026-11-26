@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\AdminVisibilitySetting;
 use App\Models\AttendanceImport;
 use App\Models\AttendanceRecord;
 use App\Models\CalendarOverride;
@@ -9,6 +10,7 @@ use App\Models\Jabatan;
 use App\Models\Karyawan;
 use App\Models\NationalHoliday;
 use App\Models\User;
+use App\Support\Attendance\AttendancePolicySettings;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\File;
 use Inertia\Testing\AssertableInertia as Assert;
@@ -108,7 +110,9 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->post(route('admin.attendance.import'), [
             'attendance_file' => $file,
         ])
-        ->assertRedirect();
+        ->assertRedirectToRoute('admin.attendance.index', [
+            'date' => '2026-11-19',
+        ]);
 
     $import = AttendanceImport::query()->firstOrFail();
 
@@ -120,7 +124,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->and($import->raw_punch_count)->toBe(23)
         ->and($import->duplicate_punch_count)->toBe(2)
         ->and($import->missing_punch_count)->toBe(1)
-        ->and($import->late_count)->toBe(1)
+        ->and($import->late_count)->toBe(3)
         ->and($import->unmatched_user_ids)->toBe(['9999']);
 
     $records = AttendanceRecord::query()
@@ -176,7 +180,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->second_in->toBeNull()
         ->second_out->toBe('07:05:00')
         ->last_out_day_offset->toBe(1)
-        ->worked_hours->toBe('8.0')
+        ->worked_hours->toBe('7.0')
         ->requires_review->toBeFalse();
 
     expect($records[$employees[3001]->id])
@@ -331,7 +335,647 @@ test('attendance import maps a missing second checkout into overtime slots', fun
         ->overtime_out->toBe('20:06:00')
         ->worked_hours->toBe('8.0')
         ->overtime_hours->toBe('2.0')
+        ->requires_review->toBeTrue()
+        ->comparison_notes->toContain('Punch keluar reguler (second out) belum tersedia.');
+});
+
+test('attendance import maps two effective punches to first in and second out', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6017,
+        'nama' => 'Two Punch Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'two-punch.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '24'],
+            [$employee->nip, 'Two Punch Employee', 'Production', '6:46 AM'],
+            [null, null, null, '6:46 AM'],
+            [null, null, null, '6:47 AM'],
+            [null, null, null, null],
+            [null, null, null, null],
+            [null, null, null, '4:05 PM'],
+        ], '2026-11-24'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->first_in->toBe('06:46:00')
+        ->first_out->toBeNull()
+        ->second_in->toBeNull()
+        ->second_out->toBe('16:05:00')
+        ->raw_punch_count->toBe(4)
+        ->effective_punch_count->toBe(2)
+        ->duplicate_punch_count->toBe(2)
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeFalse()
+        ->comparison_notes->toContain('Punch istirahat tidak ditemukan');
+});
+
+test('attendance import maps the break pair inside the configured break window', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6021,
+        'nama' => 'Break Window Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'break-window.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '20'],
+            [$employee->nip, 'Break Window Employee', 'Production', '7:36 AM'],
+            [null, null, null, '7:47 AM'],
+            [null, null, null, '7:47 AM'],
+            [null, null, null, '12:03 PM'],
+            [null, null, null, '12:03 PM'],
+            [null, null, null, '12:12 PM'],
+            [null, null, null, '12:42 PM'],
+            [null, null, null, '12:42 PM'],
+            [null, null, null, '6:03 PM'],
+            [null, null, null, '6:03 PM'],
+        ], '2026-11-20'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->first_in->toBe('07:36:00')
+        ->first_out->toBe('12:03:00')
+        ->second_in->toBe('12:42:00')
+        ->second_out->toBe('18:03:00')
+        ->overtime_in->toBeNull()
+        ->overtime_out->toBeNull()
+        ->raw_punch_count->toBe(10)
+        ->effective_punch_count->toBe(5)
+        ->duplicate_punch_count->toBe(5)
+        ->worked_hours->toBe('7.5')
+        ->overtime_hours->toBe('1.0')
+        ->has_missing_punch->toBeFalse()
         ->requires_review->toBeFalse();
+});
+
+test('attendance import ignores extra punches still inside the break window', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6027,
+        'nama' => 'Break Window Noise Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'break-window-noise.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Break Window Noise Employee', 'Production', '5:04 AM'],
+            [null, null, null, '7:21 AM'],
+            [null, null, null, '7:36 AM'],
+            [null, null, null, '11:33 AM'],
+            [null, null, null, '11:35 AM'],
+            [null, null, null, '12:22 PM'],
+            [null, null, null, '12:22 PM'],
+            [null, null, null, '12:52 PM'],
+            [null, null, null, '5:30 PM'],
+            [null, null, null, '7:03 PM'],
+            [null, null, null, '7:03 PM'],
+            [null, null, null, '7:40 PM'],
+            [null, null, null, '7:47 PM'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->first_in->toBe('05:04:00')
+        ->first_out->toBe('11:33:00')
+        ->second_in->toBe('12:22:00')
+        ->second_out->toBe('17:30:00')
+        ->overtime_in->toBe('19:03:00')
+        ->overtime_out->toBe('19:40:00')
+        ->ignored_punch_count->toBe(3)
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeFalse();
+});
+
+test('attendance import marks an early break out as late for day and night shifts', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $dayEmployee = Karyawan::factory()->create([
+        'nip' => 6022,
+        'nama' => 'Early Day Break Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+        'metode_penggajian' => 'Per Jam',
+    ]);
+    $nightEmployee = Karyawan::factory()->create([
+        'nip' => 6023,
+        'nama' => 'Early Night Break Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+        'metode_penggajian' => 'Per Jam',
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'early-break.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$dayEmployee->nip, 'Early Day Break Employee', 'Production', '8:00 AM'],
+            [null, null, null, '11:29 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+            [$nightEmployee->nip, 'Early Night Break Employee', 'Production', '8:00 PM'],
+            [null, null, null, '10:59 PM'],
+            [null, null, null, '11:30 PM'],
+            [null, null, null, '5:00 AM+'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $records = AttendanceRecord::query()
+        ->whereIn('karyawan_id', [$dayEmployee->id, $nightEmployee->id])
+        ->get()
+        ->keyBy('karyawan_id');
+
+    expect($records[$dayEmployee->id])
+        ->first_out->toBe('11:29:00')
+        ->status->toBe('late')
+        ->late_minutes->toBe(1)
+        ->late_penalty_hours->toBe(1)
+        ->comparison_notes->toContain('Keluar istirahat 1 menit lebih awal.');
+
+    expect($records[$nightEmployee->id])
+        ->shift->toBe('night')
+        ->first_out->toBe('22:59:00')
+        ->status->toBe('late')
+        ->late_minutes->toBe(1)
+        ->late_penalty_hours->toBe(1)
+        ->comparison_notes->toContain('Keluar istirahat 1 menit lebih awal.');
+});
+
+test('attendance import deducts regular work hours by full late hours', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $fourMinuteEmployee = Karyawan::factory()->create([
+        'nip' => 6028,
+        'nama' => 'Four Minute Late',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $oneHourEmployee = Karyawan::factory()->create([
+        'nip' => 6029,
+        'nama' => 'One Hour Four Late',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'late-work-deduction.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$fourMinuteEmployee->nip, 'Four Minute Late', 'Production', '8:04 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+            [$oneHourEmployee->nip, 'One Hour Four Late', 'Production', '9:04 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $records = AttendanceRecord::query()
+        ->whereIn('karyawan_id', [$fourMinuteEmployee->id, $oneHourEmployee->id])
+        ->get()
+        ->keyBy('karyawan_id');
+
+    expect($records[$fourMinuteEmployee->id])
+        ->late_minutes->toBe(4)
+        ->late_penalty_hours->toBe(1)
+        ->worked_hours->toBe('6.5')
+        ->status->toBe('late');
+
+    expect($records[$oneHourEmployee->id])
+        ->late_minutes->toBe(64)
+        ->late_penalty_hours->toBe(2)
+        ->worked_hours->toBe('4.5')
+        ->status->toBe('late');
+});
+
+test('attendance import uses the configured attendance tolerance', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6032,
+        'nama' => 'Configured Tolerance',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    AdminVisibilitySetting::factory()->create(['id' => 1]);
+    app(AttendancePolicySettings::class)->updateToleranceMinutes(0);
+    $file = UploadedFile::fake()->createWithContent(
+        'configured-tolerance.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Configured Tolerance', 'Production', '8:03 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->status->toBe('late')
+        ->late_minutes->toBe(3)
+        ->late_penalty_hours->toBe(1)
+        ->worked_hours->toBe('6.5');
+});
+
+test('attendance import deducts holiday work hours by late penalty hours', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6030,
+        'nama' => 'Holiday Late Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'holiday-late-deduction.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '22'],
+            [$employee->nip, 'Holiday Late Employee', 'Production', '8:04 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+        ], '2026-11-22'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->is_holiday_pay->toBeTrue()
+        ->worked_hours->toBe('0.0')
+        ->holiday_worked_hours->toBe('13.0')
+        ->late_penalty_hours->toBe(1)
+        ->status->toBe('late');
+});
+
+test('attendance import applies second in return time and tolerance', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6031,
+        'nama' => 'Late Break Return',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'late-break-return.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Late Break Return', 'Production', '8:00 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:34 PM'],
+            [null, null, null, '5:00 PM'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->status->toBe('late')
+        ->late_minutes->toBe(4)
+        ->late_penalty_hours->toBe(1)
+        ->worked_hours->toBe('6.5')
+        ->comparison_notes->toContain('Terlambat masuk istirahat 4 menit.');
+});
+
+test('attendance import keeps an active review after corrected punches are imported', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6020,
+        'nama' => 'Corrected Punch Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $incompleteFile = UploadedFile::fake()->createWithContent(
+        'incomplete-punch.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Corrected Punch Employee', 'Production', '8:00 AM'],
+        ], '2026-11-19'),
+    );
+    $correctedFile = UploadedFile::fake()->createWithContent(
+        'corrected-punch.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Corrected Punch Employee', 'Production', '8:00 AM'],
+            [null, null, null, '11:30 AM'],
+            [null, null, null, '12:30 PM'],
+            [null, null, null, '5:00 PM'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $incompleteFile,
+        ])
+        ->assertRedirect();
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $correctedFile,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->worked_hours->toBe('8.0')
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeTrue()
+        ->comparison_notes->toContain('Status review dipertahankan sampai admin menghapusnya secara manual.');
+});
+
+test('attendance import counts saturday night work from seventeen and overtime after midnight', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6018,
+        'nama' => 'Saturday Night Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'saturday-night.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '21'],
+            [$employee->nip, 'Saturday Night Employee', 'Production', '4:39 PM'],
+            [null, null, null, '1:03 AM+'],
+        ], '2026-11-21'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->shift->toBe('night')
+        ->expected_check_in->toBe('17:00:00')
+        ->expected_check_out->toBe('00:00:00')
+        ->first_in->toBe('16:39:00')
+        ->second_out->toBe('01:03:00')
+        ->second_out_day_offset->toBe(1)
+        ->worked_hours->toBe('6.0')
+        ->overtime_hours->toBe('1.0');
+});
+
+test('attendance import infers next day on night shift punches without plus suffix', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6026,
+        'nama' => 'Night Rollover Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'night-rollover.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '20'],
+            [$employee->nip, 'Night Rollover Employee', 'Production', '7:46 PM'],
+            [null, null, null, '12:01 AM'],
+            [null, null, null, '12:52 AM'],
+            [null, null, null, '6:33 AM'],
+        ], '2026-11-20'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->shift->toBe('night')
+        ->first_in->toBe('19:46:00')
+        ->first_out->toBe('00:01:00')
+        ->first_out_day_offset->toBe(1)
+        ->second_in->toBe('00:52:00')
+        ->second_in_day_offset->toBe(1)
+        ->second_out->toBe('06:33:00')
+        ->second_out_day_offset->toBe(1)
+        ->worked_hours->toBe('7.5')
+        ->overtime_hours->toBe('1.5')
+        ->requires_review->toBeFalse();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-20']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.first_out_day_offset', 1));
+});
+
+test('attendance import caps saturday security regular work at six hours', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $securityDepartment = Department::factory()->create(['name' => 'Security']);
+    $securityPosition = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6019,
+        'nama' => 'Saturday Security Employee',
+        'department_id' => $securityDepartment->id,
+        'jabatan_id' => $securityPosition->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'security-overtime.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '21'],
+            [$employee->nip, 'Saturday Security Employee', 'Security', '5:00 PM'],
+            [null, null, null, '1:00 AM+'],
+        ], '2026-11-21'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->schedule_profile->toBe('security')
+        ->shift->toBe('night')
+        ->expected_check_out->toBe('00:00:00')
+        ->worked_hours->toBe('6.0')
+        ->overtime_hours->toBe('1.0')
+        ->has_missing_punch->toBeFalse();
+});
+
+test('attendance import ignores extra punches for two-punch security', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $securityDepartment = Department::factory()->create(['name' => 'Security']);
+    $securityPosition = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6024,
+        'nama' => 'Two Punch Saturday Security',
+        'department_id' => $securityDepartment->id,
+        'jabatan_id' => $securityPosition->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'two-punch-security.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '21'],
+            [$employee->nip, 'Two Punch Saturday Security', 'Security', '7:02 PM'],
+            [null, null, null, '7:02 PM'],
+            [null, null, null, '7:02 PM'],
+            [null, null, null, '7:25 PM'],
+            [null, null, null, '7:26 PM'],
+            [null, null, null, '7:26 PM'],
+            [null, null, null, '7:09 AM+'],
+            [null, null, null, '7:09 AM+'],
+            [null, null, null, '7:09 AM+'],
+            [null, null, null, '7:09 AM+'],
+        ], '2026-11-21'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->schedule_profile->toBe('security')
+        ->shift->toBe('night')
+        ->first_in->toBe('19:02:00')
+        ->first_out->toBeNull()
+        ->second_in->toBeNull()
+        ->second_out->toBe('07:09:00')
+        ->second_out_day_offset->toBe(1)
+        ->overtime_in->toBeNull()
+        ->overtime_out->toBeNull()
+        ->raw_punch_count->toBe(10)
+        ->effective_punch_count->toBe(3)
+        ->duplicate_punch_count->toBe(7)
+        ->ignored_punch_count->toBe(1)
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeFalse()
+        ->comparison_notes->toContain('1 punch tambahan diabaikan setelah pemetaan slot.');
+});
+
+test('attendance import reviews security when two punches are near checkout', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $securityDepartment = Department::factory()->create(['name' => 'Security']);
+    $securityPosition = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6025,
+        'nama' => 'Ambiguous Security Checkout',
+        'department_id' => $securityDepartment->id,
+        'jabatan_id' => $securityPosition->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'ambiguous-security-checkout.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '19'],
+            [$employee->nip, 'Ambiguous Security Checkout', 'Security', '7:46 PM'],
+            [null, null, null, '12:02 AM+'],
+            [null, null, null, '12:30 AM+'],
+            [null, null, null, '6:02 AM+'],
+            [null, null, null, '6:58 AM+'],
+        ], '2026-11-19'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->first_in->toBe('19:46:00')
+        ->first_out->toBeNull()
+        ->second_in->toBeNull()
+        ->second_out->toBe('06:58:00')
+        ->second_out_day_offset->toBe(1)
+        ->ignored_punch_count->toBe(3)
+        ->has_missing_punch->toBeFalse()
+        ->requires_review->toBeTrue()
+        ->comparison_notes->toContain('2 punch berada di sekitar jam pulang Security; checkout perlu ditinjau.');
 });
 
 test('attendance import keeps a fourth punch inside fifty nine minutes as second checkout', function () {

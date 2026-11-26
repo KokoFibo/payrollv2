@@ -183,6 +183,78 @@ test('developer can create update and delete special work schedules', function (
     $this->assertModelMissing($schedule);
 });
 
+test('developer can apply and revise a bulk schedule and existing attendance is recalculated', function () {
+    $developer = User::factory()->create(['role' => 8]);
+    $department = Department::factory()->create(['name' => 'Production']);
+    $position = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $position->id,
+    ]);
+    $attendance = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2027-02-04',
+        'status' => 'present',
+        'first_in' => '08:00:00',
+        'first_out' => '11:30:00',
+        'second_in' => '12:30:00',
+        'second_out' => '16:00:00',
+        'worked_hours' => 8,
+        'has_missing_punch' => false,
+    ]);
+    $payload = [
+        'name' => 'Ramadan 2027',
+        'starts_on' => '2027-02-01',
+        'ends_on' => '2027-03-01',
+        'schedules' => [
+            [
+                'enabled' => true,
+                'schedule_profile' => 'general',
+                'shift' => 'day',
+                'check_in' => '08:00',
+                'check_out' => '16:00',
+                'check_out_day_offset' => 0,
+                'standard_work_hours' => 7,
+                'expected_punch_count' => 4,
+            ],
+        ],
+    ];
+
+    $this->actingAs($developer)
+        ->post(route('admin.developer-settings.special-work-schedules.bulk'), $payload)
+        ->assertRedirect();
+
+    expect(SpecialWorkSchedule::query()->count())->toBe(1);
+    expect($attendance->refresh())
+        ->expected_check_in->toBe('08:00:00')
+        ->expected_check_out->toBe('16:00:00')
+        ->worked_hours->toBe('7.0');
+
+    $payload['schedules'][0]['check_in'] = '09:00';
+    $payload['schedules'][0]['check_out'] = '15:00';
+    $payload['schedules'][0]['standard_work_hours'] = 6;
+
+    $this->actingAs($developer)
+        ->post(route('admin.developer-settings.special-work-schedules.bulk'), $payload)
+        ->assertRedirect();
+
+    expect(SpecialWorkSchedule::query()->count())->toBe(1);
+    expect($attendance->refresh())
+        ->expected_check_in->toBe('09:00:00')
+        ->expected_check_out->toBe('15:00:00')
+        ->worked_hours->toBe('5.0');
+
+    $payload['schedules'][0]['enabled'] = false;
+
+    $this->actingAs($developer)
+        ->post(route('admin.developer-settings.special-work-schedules.bulk'), $payload)
+        ->assertRedirect();
+
+    expect(SpecialWorkSchedule::query()->count())->toBe(0);
+    expect($attendance->refresh())
+        ->expected_check_in->toBe('08:00:00')
+        ->expected_check_out->toBe('17:00:00');
+});
+
 test('developer can create update and delete company calendar overrides', function () {
     $developer = User::factory()->create(['role' => 8]);
     $company = Company::factory()->create(['name' => 'Company Shift Kalender']);
