@@ -44,6 +44,7 @@ class AttendanceController extends Controller
         'late_minutes' => 'attendance_records.late_minutes',
         'worked_hours' => 'attendance_records.worked_hours',
         'overtime_hours' => 'attendance_records.overtime_hours',
+        'night_shift_allowance' => 'attendance_records.night_shift_allowance',
         'holiday_worked_hours' => 'attendance_records.holiday_worked_hours',
         'holiday_overtime_hours' => 'attendance_records.holiday_overtime_hours',
         'notes' => 'attendance_records.notes',
@@ -124,6 +125,10 @@ class AttendanceController extends Controller
                 'skipped_without_punch_count' => $import->skipped_without_punch_count,
                 'unmatched_employee_count' => $import->unmatched_employee_count,
                 'missing_punch_count' => $import->missing_punch_count,
+                'review_required_count' => AttendanceRecord::query()
+                    ->where('attendance_import_id', $import->id)
+                    ->where('requires_review', true)
+                    ->count(),
                 'late_count' => $import->late_count,
                 'unmatched_user_ids' => array_slice($import->unmatched_user_ids ?? [], 0, 10),
             ]);
@@ -382,7 +387,11 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'attendance_date' => ['required', 'date'],
         ]);
-        $deletedCount = $this->dayQuery($validated['attendance_date'])->delete();
+        $records = $this->dayQuery($validated['attendance_date'])
+            ->with('karyawan')
+            ->get();
+        $records->each->delete();
+        $deletedCount = $records->count();
 
         return back()->with('toast', [
             'type' => 'success',
@@ -465,6 +474,7 @@ class AttendanceController extends Controller
             'clock_slots' => $this->clockSlots($record),
             'worked_hours' => (float) $record->worked_hours,
             'overtime_hours' => (float) $record->overtime_hours,
+            'night_shift_allowance' => (float) $record->night_shift_allowance,
             'holiday_worked_hours' => (float) $record->holiday_worked_hours,
             'holiday_overtime_hours' => (float) $record->holiday_overtime_hours,
             'is_holiday_pay' => $record->is_holiday_pay,
@@ -538,7 +548,10 @@ class AttendanceController extends Controller
             ->from('attendance_records as monthly_reviews')
             ->selectRaw('COUNT(*)')
             ->whereColumn('monthly_reviews.karyawan_id', 'attendance_records.karyawan_id')
-            ->where('monthly_reviews.requires_review', true)
+            ->where(function (Builder $query): void {
+                $query->where('monthly_reviews.requires_review', true)
+                    ->orWhereNotNull('monthly_reviews.review_resolved_at');
+            })
             ->whereBetween('monthly_reviews.attendance_date', [$monthStart, $monthEnd]);
 
         return $this->dayQuery($attendanceDate)

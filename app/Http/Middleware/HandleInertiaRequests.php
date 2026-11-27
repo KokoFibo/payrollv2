@@ -40,6 +40,7 @@ class HandleInertiaRequests extends Middleware
                     'email',
                     'role',
                     'email_verified_at',
+                    'must_change_password',
                 ]),
                 'roleName' => $request->user()?->assignedRole?->name,
                 'can' => [

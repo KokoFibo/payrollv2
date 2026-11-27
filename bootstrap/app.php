@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\EnsurePasswordChanged;
 use App\Http\Middleware\EnsurePayrollAccess;
 use App\Http\Middleware\HandleInertiaRequests;
 use App\Http\Middleware\PreventSearchIndexing;
@@ -21,6 +22,10 @@ return Application::configure(basePath: dirname(__DIR__))
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
             PreventSearchIndexing::class,
+        ]);
+
+        $middleware->alias([
+            'password.changed' => EnsurePasswordChanged::class,
         ]);
 
         $middleware->redirectGuestsTo(fn (Request $request) => route('login'));

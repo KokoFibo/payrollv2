@@ -145,6 +145,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->second_in->toBe('12:30:00')
         ->second_out->toBe('17:05:00')
         ->worked_hours->toBe('8.0')
+        ->night_shift_allowance->toBe('0.0')
         ->raw_punch_count->toBe(4)
         ->effective_punch_count->toBe(4)
         ->late_minutes->toBe(0)
@@ -183,6 +184,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->second_out->toBe('07:05:00')
         ->last_out_day_offset->toBe(1)
         ->worked_hours->toBe('8.0')
+        ->night_shift_allowance->toBe('1.0')
         ->late_minutes->toBe(0)
         ->late_penalty_hours->toBeNull()
         ->early_leave_minutes->toBe(0)
@@ -842,6 +844,7 @@ test('attendance import infers next day on night shift punches without plus suff
         ->second_out_day_offset->toBe(1)
         ->worked_hours->toBe('8.0')
         ->overtime_hours->toBe('1.5')
+        ->night_shift_allowance->toBe('1.0')
         ->requires_review->toBeFalse();
 
     $this->actingAs($admin)
@@ -921,6 +924,7 @@ test('attendance import caps saturday security regular work at six hours', funct
         ->expected_check_out->toBe('00:00:00')
         ->worked_hours->toBe('6.0')
         ->overtime_hours->toBe('2.0')
+        ->night_shift_allowance->toBe('1.0')
         ->has_missing_punch->toBeFalse();
 });
 

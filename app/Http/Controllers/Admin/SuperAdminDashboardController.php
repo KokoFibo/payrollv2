@@ -5,7 +5,10 @@ namespace App\Http\Controllers\Admin;
 use App\Enums\KaryawanStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Karyawan;
+use App\Models\PayrollAuditLog;
 use App\Support\Payroll\SalaryAdjustTemplateExporter;
+use App\Support\PayrollAuditService;
+use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -22,6 +25,46 @@ class SuperAdminDashboardController extends Controller
         Gate::authorize('access-super-admin-dashboard');
 
         $query = $this->activeEmployeeQuery();
+        $auditSearch = trim((string) $request->query('audit_search', ''));
+        $auditEvent = (string) $request->query('audit_event', '');
+        $auditFrom = $this->validDate($request->query('audit_from'));
+        $auditTo = $this->validDate($request->query('audit_to'));
+        $auditLogs = PayrollAuditLog::query()
+            ->when($auditSearch !== '', function (Builder $query) use ($auditSearch): void {
+                $query->where(function (Builder $query) use ($auditSearch): void {
+                    $query->where('actor_name', 'like', "%{$auditSearch}%")
+                        ->orWhere('employee_nip', 'like', "%{$auditSearch}%")
+                        ->orWhere('employee_name', 'like', "%{$auditSearch}%")
+                        ->orWhere('subject_label', 'like', "%{$auditSearch}%");
+                });
+            })
+            ->when(
+                array_key_exists($auditEvent, PayrollAuditService::EVENT_LABELS),
+                fn (Builder $query): Builder => $query->where('event_type', $auditEvent),
+            )
+            ->when($auditFrom !== '', fn (Builder $query): Builder => $query->whereDate('occurred_at', '>=', $auditFrom))
+            ->when($auditTo !== '', fn (Builder $query): Builder => $query->whereDate('occurred_at', '<=', $auditTo))
+            ->orderByDesc('occurred_at')
+            ->orderByDesc('id')
+            ->paginate(15)
+            ->withQueryString()
+            ->through(fn (PayrollAuditLog $auditLog): array => [
+                'id' => $auditLog->id,
+                'actor_name' => $auditLog->actor_name,
+                'actor_role' => $auditLog->actor_role,
+                'event_type' => $auditLog->event_type,
+                'event_label' => PayrollAuditService::EVENT_LABELS[$auditLog->event_type]
+                    ?? $auditLog->event_type,
+                'subject_type' => $auditLog->subject_type,
+                'subject_id' => $auditLog->subject_id,
+                'subject_label' => $auditLog->subject_label,
+                'employee_nip' => $auditLog->employee_nip,
+                'employee_name' => $auditLog->employee_name,
+                'changes' => $auditLog->changes ?? [],
+                'metadata' => $auditLog->metadata ?? [],
+                'ip_address' => $auditLog->ip_address,
+                'occurred_at' => $auditLog->occurred_at?->toISOString(),
+            ]);
 
         return Inertia::render('SuperAdmin/Dashboard', [
             'readiness' => [
@@ -34,6 +77,17 @@ class SuperAdminDashboardController extends Controller
             ],
             'roleName' => $request->user()?->assignedRole?->name ?? 'Privileged User',
             'today' => now()->locale('id')->translatedFormat('d M Y'),
+            'payrollAuditLogs' => $auditLogs,
+            'payrollAuditFilters' => [
+                'search' => $auditSearch,
+                'event' => $auditEvent,
+                'from' => $auditFrom,
+                'to' => $auditTo,
+            ],
+            'payrollAuditEventOptions' => collect(PayrollAuditService::EVENT_LABELS)
+                ->map(fn (string $label, string $value): array => compact('value', 'label'))
+                ->values()
+                ->all(),
         ]);
     }
 
@@ -59,6 +113,19 @@ class SuperAdminDashboardController extends Controller
     {
         return Karyawan::query()
             ->whereIn('status_karyawan', KaryawanStatus::valuesForFilter('active'));
+    }
+
+    private function validDate(mixed $date): string
+    {
+        if (! is_string($date) || trim($date) === '') {
+            return '';
+        }
+
+        try {
+            return CarbonImmutable::parse($date)->toDateString();
+        } catch (\Throwable) {
+            return '';
+        }
     }
 
     /**

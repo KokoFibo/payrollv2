@@ -3,11 +3,15 @@ import { computed, ref } from "vue";
 import { Head } from "@inertiajs/vue3";
 import AdminLayout from "@/Layouts/AdminLayout.vue";
 import PageHeader from "@/Components/Admin/PageHeader.vue";
+import PayrollAuditPanel from "@/Components/Admin/SuperAdmin/PayrollAuditPanel.vue";
 
 const props = defineProps({
     readiness: { type: Object, required: true },
     roleName: { type: String, required: true },
     today: { type: String, required: true },
+    payrollAuditLogs: { type: Object, required: true },
+    payrollAuditFilters: { type: Object, required: true },
+    payrollAuditEventOptions: { type: Array, required: true },
 });
 
 const exporting = ref(null);
@@ -210,6 +214,12 @@ function download(type) {
                     </div>
                 </template>
             </Card>
+
+            <PayrollAuditPanel
+                :logs="payrollAuditLogs"
+                :filters="payrollAuditFilters"
+                :event-options="payrollAuditEventOptions"
+            />
         </div>
     </AdminLayout>
 </template>

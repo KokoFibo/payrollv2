@@ -151,63 +151,66 @@ class AttendanceRecordEditor
             $comparisonNotes[] = 'Status review dipertahankan sampai admin menghapusnya secara manual.';
         }
 
-        return AttendanceRecord::query()->updateOrCreate(
-            [
-                'karyawan_id' => $karyawan->id,
-                'attendance_date' => $attendanceDate->toDateString(),
-            ],
-            [
-                'status' => $calculatedStatus,
-                'shift' => $schedule->shift,
-                'schedule_profile' => $schedule->profile,
-                'first_in' => $this->slotTime($slots, 'first_in'),
-                'first_out' => $this->slotTime($slots, 'first_out'),
-                'first_out_day_offset' => $this->slotDayOffset($slots, 'first_out'),
-                'second_in' => $this->slotTime($slots, 'second_in'),
-                'second_out' => $this->slotTime($slots, 'second_out'),
-                'overtime_in' => $this->slotTime($slots, 'overtime_in'),
-                'overtime_out' => $this->slotTime($slots, 'overtime_out'),
-                'second_in_day_offset' => $this->slotDayOffset($slots, 'second_in'),
-                'second_out_day_offset' => $this->slotDayOffset($slots, 'second_out'),
-                'overtime_in_day_offset' => $this->slotDayOffset($slots, 'overtime_in'),
-                'overtime_out_day_offset' => $this->slotDayOffset($slots, 'overtime_out'),
-                'expected_check_in' => $schedule->expectedCheckIn->format('H:i:s'),
-                'expected_check_out' => $schedule->expectedCheckOut->format('H:i:s'),
-                'last_out_day_offset' => $lastPunch === null
-                    ? 0
-                    : (int) $attendanceDate->diffInDays($lastPunch->startOfDay()),
-                'worked_hours' => $timeSummary['worked_hours'],
-                'worked_days' => $presentSlotCount > 0 ? 1 : 0,
-                'overtime_hours' => $timeSummary['overtime_hours'],
-                'holiday_worked_hours' => $timeSummary['holiday_worked_hours'],
-                'holiday_overtime_hours' => $timeSummary['holiday_overtime_hours'],
-                'raw_punch_count' => $rawPunchCount,
-                'effective_punch_count' => $presentSlotCount,
-                'duplicate_punch_count' => $duplicatePunchCount,
-                'ignored_punch_count' => $ignoredPunchCount,
-                'late_minutes' => $lateMinutes,
-                'late_penalty_hours' => $latePenaltyHours,
-                'early_leave_minutes' => $earlyLeaveMinutes,
-                'has_missing_punch' => $hasMissingPunch,
-                'has_duplicate_punch' => $hasDuplicatePunch,
-                'requires_review' => $requiresReview,
-                'review_resolved_at' => $requiresReview
-                    ? null
-                    : $existingRecord?->review_resolved_at,
-                'review_resolved_by' => $requiresReview
-                    ? null
-                    : $existingRecord?->review_resolved_by,
-                'review_resolution_note' => $requiresReview
-                    ? null
-                    : $existingRecord?->review_resolution_note,
-                'comparison_notes' => $comparisonNotes === []
-                    ? null
-                    : implode(' ', $comparisonNotes),
-                'recorded_by' => $existingRecord?->recorded_by ?? $recordedBy,
-                'calendar_override_id' => $schedule->calendarOverrideId,
-                'is_holiday_pay' => $schedule->isHolidayPay,
-            ],
-        );
+        $record = $existingRecord ?? new AttendanceRecord([
+            'karyawan_id' => $karyawan->id,
+            'attendance_date' => $attendanceDate->toDateString(),
+        ]);
+        $record->fill([
+            'status' => $calculatedStatus,
+            'shift' => $schedule->shift,
+            'schedule_profile' => $schedule->profile,
+            'first_in' => $this->slotTime($slots, 'first_in'),
+            'first_out' => $this->slotTime($slots, 'first_out'),
+            'first_out_day_offset' => $this->slotDayOffset($slots, 'first_out'),
+            'second_in' => $this->slotTime($slots, 'second_in'),
+            'second_out' => $this->slotTime($slots, 'second_out'),
+            'overtime_in' => $this->slotTime($slots, 'overtime_in'),
+            'overtime_out' => $this->slotTime($slots, 'overtime_out'),
+            'second_in_day_offset' => $this->slotDayOffset($slots, 'second_in'),
+            'second_out_day_offset' => $this->slotDayOffset($slots, 'second_out'),
+            'overtime_in_day_offset' => $this->slotDayOffset($slots, 'overtime_in'),
+            'overtime_out_day_offset' => $this->slotDayOffset($slots, 'overtime_out'),
+            'expected_check_in' => $schedule->expectedCheckIn->format('H:i:s'),
+            'expected_check_out' => $schedule->expectedCheckOut->format('H:i:s'),
+            'last_out_day_offset' => $lastPunch === null
+                ? 0
+                : (int) $attendanceDate->diffInDays($lastPunch->startOfDay()),
+            'worked_hours' => $timeSummary['worked_hours'],
+            'worked_days' => $presentSlotCount > 0 ? 1 : 0,
+            'overtime_hours' => $timeSummary['overtime_hours'],
+            'holiday_worked_hours' => $timeSummary['holiday_worked_hours'],
+            'holiday_overtime_hours' => $timeSummary['holiday_overtime_hours'],
+            'night_shift_allowance' => $timeSummary['night_shift_allowance'],
+            'raw_punch_count' => $rawPunchCount,
+            'effective_punch_count' => $presentSlotCount,
+            'duplicate_punch_count' => $duplicatePunchCount,
+            'ignored_punch_count' => $ignoredPunchCount,
+            'late_minutes' => $lateMinutes,
+            'late_penalty_hours' => $latePenaltyHours,
+            'early_leave_minutes' => $earlyLeaveMinutes,
+            'has_missing_punch' => $hasMissingPunch,
+            'has_duplicate_punch' => $hasDuplicatePunch,
+            'requires_review' => $requiresReview,
+            'review_resolved_at' => $requiresReview
+                ? null
+                : $existingRecord?->review_resolved_at,
+            'review_resolved_by' => $requiresReview
+                ? null
+                : $existingRecord?->review_resolved_by,
+            'review_resolution_note' => $requiresReview
+                ? null
+                : $existingRecord?->review_resolution_note,
+            'comparison_notes' => $comparisonNotes === []
+                ? null
+                : implode(' ', $comparisonNotes),
+            'recorded_by' => $existingRecord?->recorded_by ?? $recordedBy,
+            'calendar_override_id' => $schedule->calendarOverrideId,
+            'is_holiday_pay' => $schedule->isHolidayPay,
+        ]);
+        $record->setRelation('karyawan', $karyawan);
+        $record->save();
+
+        return $record;
     }
 
     public function recalculate(

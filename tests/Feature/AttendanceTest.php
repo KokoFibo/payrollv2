@@ -192,6 +192,69 @@ test('attendance filters records by shift before rendering', function () {
             ->has('options.shifts', 2));
 });
 
+test('inline attendance records a night allowance only after night work is calculated', function (
+    array $punchTimes,
+    string $expectedShift,
+    int $expectedAllowance,
+) {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Production']);
+    $jabatan = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            ...$punchTimes,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-19')
+        ->firstOrFail();
+
+    expect($record)
+        ->shift->toBe($expectedShift)
+        ->night_shift_allowance->toBe(number_format($expectedAllowance, 1, '.', ''));
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.night_shift_allowance', $expectedAllowance));
+})->with([
+    'day shift' => [[
+        'first_in' => '08:00',
+        'first_out' => '11:30',
+        'second_in' => '12:30',
+        'second_out' => '17:00',
+        'overtime_in' => null,
+        'overtime_out' => null,
+    ], 'day', 0],
+    'night shift with calculated work' => [[
+        'first_in' => '20:00',
+        'first_out' => '23:30',
+        'second_in' => '00:30',
+        'second_out' => '05:00',
+        'overtime_in' => null,
+        'overtime_out' => null,
+    ], 'night', 1],
+    'night shift without calculated work' => [[
+        'first_in' => '20:00',
+        'first_out' => null,
+        'second_in' => null,
+        'second_out' => null,
+        'overtime_in' => null,
+        'overtime_out' => null,
+    ], 'night', 0],
+]);
+
 test('security checkout before schedule is counted as a normal full shift', function (
     string $date,
     string $firstIn,
@@ -1004,6 +1067,45 @@ test('admin can resolve review without changing attendance punches', function ()
         ->review_resolution_note->toBe('Data ditandai sudah benar oleh admin.');
 });
 
+test('done review keeps the monthly count until review metadata is deleted', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+    $record = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'requires_review' => true,
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.monthly_review_count', 1));
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.resolve-review', $record))
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeFalse()
+        ->review_resolved_at->not->toBeNull();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.monthly_review_count', 1));
+
+    $this->actingAs($admin)
+        ->delete(route('admin.attendance.destroy-review', $record))
+        ->assertRedirect();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.monthly_review_count', 0));
+});
+
 test('admin can delete review metadata without marking data correct', function () {
     $admin = User::factory()->create(['role' => 5]);
     $record = AttendanceRecord::factory()->create([
@@ -1047,8 +1149,8 @@ test('attendance shows monthly review count and penalty after three reviews', fu
         ->get(route('admin.attendance.index', ['date' => '2026-11-05']))
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
-            ->where('records.data.0.monthly_review_count', 4)
-            ->where('records.data.0.review_penalty_hours', 1));
+            ->where('records.data.0.monthly_review_count', 5)
+            ->where('records.data.0.review_penalty_hours', 2));
 });
 
 test('non admin cannot resolve or delete attendance review', function () {
