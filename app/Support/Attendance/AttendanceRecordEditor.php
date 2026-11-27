@@ -40,6 +40,14 @@ class AttendanceRecordEditor
             'overtime_in',
             'overtime_out',
         ];
+        $hasChangedAttendanceData = $existingRecord !== null
+            && $this->hasChangedAttendanceData($existingRecord, $status, $slotTimes);
+        $hadResolvedReview = $existingRecord !== null
+            && (
+                $existingRecord->review_resolved_at !== null
+                || $existingRecord->review_resolved_by !== null
+            );
+        $reviewReopenedByEdit = $hadResolvedReview && $hasChangedAttendanceData;
         $slots = [];
         $previousPunch = null;
 
@@ -86,9 +94,11 @@ class AttendanceRecordEditor
         );
         $lateMinutes = $lateness['total_minutes'];
         $isLate = $lateness['is_late'];
-        $calculatedStatus = $isLate && in_array($status, ['present', 'remote'], true)
-            ? 'late'
-            : $status;
+        $calculatedStatus = match (true) {
+            $isLate && in_array($status, ['present', 'remote'], true) => 'late',
+            ! $isLate && $status === 'late' => 'present',
+            default => $status,
+        };
         $presentSlotCount = collect($slots)->filter()->count();
         $rawPunchCount = $existingRecord?->raw_punch_count ?? $presentSlotCount;
         $duplicatePunchCount = $existingRecord?->duplicate_punch_count ?? 0;
@@ -100,10 +110,13 @@ class AttendanceRecordEditor
         $preservedReview = ($existingRecord?->requires_review ?? false)
             && ! $hasMissingPunch
             && ! $timeSummary['requires_review'];
-        $requiresReview = $preservedReview
+        $requiresReview = $reviewReopenedByEdit
+            || $preservedReview
             || $hasMissingPunch
             || $timeSummary['requires_review'];
-        $earlyLeaveMinutes = $lastPunch !== null && ! $hasMissingPunch
+        $earlyLeaveMinutes = $schedule->profile !== 'security'
+            && $lastPunch !== null
+            && ! $hasMissingPunch
             ? max(0, (int) round(
                 ($schedule->expectedCheckOut->getTimestamp() - $lastPunch->getTimestamp()) / 60,
             ))
@@ -132,7 +145,9 @@ class AttendanceRecordEditor
             ...$schedule->reviewNotes,
         ];
 
-        if ($preservedReview) {
+        if ($reviewReopenedByEdit) {
+            $comparisonNotes[] = 'Data diubah setelah review; menunggu review ulang.';
+        } elseif ($preservedReview) {
             $comparisonNotes[] = 'Status review dipertahankan sampai admin menghapusnya secara manual.';
         }
 
@@ -233,5 +248,40 @@ class AttendanceRecordEditor
     private function slotDayOffset(array $slots, string $slot): int
     {
         return isset($slots[$slot]) && $slots[$slot]['is_next_day'] ? 1 : 0;
+    }
+
+    /**
+     * @param  array<string, string|null>  $slotTimes
+     */
+    private function hasChangedAttendanceData(
+        AttendanceRecord $record,
+        string $status,
+        array $slotTimes,
+    ): bool {
+        if ($record->status !== $status) {
+            return true;
+        }
+
+        foreach ([
+            'first_in',
+            'first_out',
+            'second_in',
+            'second_out',
+            'overtime_in',
+            'overtime_out',
+        ] as $slot) {
+            if ($this->shortTime($record->{$slot}) !== $this->shortTime($slotTimes[$slot] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function shortTime(?string $time): ?string
+    {
+        return $time === null || $time === ''
+            ? null
+            : substr($time, 0, 5);
     }
 }

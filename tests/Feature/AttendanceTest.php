@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\PayrollMethod;
 use App\Models\AttendanceRecord;
 use App\Models\CalendarOverride;
 use App\Models\Company;
@@ -165,6 +166,157 @@ test('attendance filters employees by organization and position', function () {
             ->has('options.jabatans', 1));
 });
 
+test('attendance filters records by shift before rendering', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $dayEmployee = Karyawan::factory()->create(['nama' => 'Day Shift Employee']);
+    $nightEmployee = Karyawan::factory()->create(['nama' => 'Night Shift Employee']);
+    AttendanceRecord::factory()->for($dayEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'shift' => 'day',
+    ]);
+    AttendanceRecord::factory()->for($nightEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'shift' => 'night',
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'shift' => 'night',
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('records.data', 1)
+            ->where('records.data.0.employee.name', 'Night Shift Employee')
+            ->where('filters.shift', 'night')
+            ->has('options.shifts', 2));
+});
+
+test('security checkout before schedule is counted as a normal full shift', function (
+    string $date,
+    string $firstIn,
+    string $secondOut,
+) {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Security']);
+    $jabatan = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => $date,
+            'status' => 'present',
+            'first_in' => $firstIn,
+            'first_out' => null,
+            'second_in' => null,
+            'second_out' => $secondOut,
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', $date)
+        ->firstOrFail();
+
+    expect($record)
+        ->status->toBe('present')
+        ->worked_hours->toBe('8.0')
+        ->late_minutes->toBe(0)
+        ->late_penalty_hours->toBeNull()
+        ->early_leave_minutes->toBe(0);
+})->with([
+    'day shift checkout before 20:00' => [
+        '2026-11-20',
+        '08:00',
+        '15:00',
+    ],
+    'night shift checkout before 08:00' => [
+        '2026-11-20',
+        '20:00',
+        '04:00',
+    ],
+]);
+
+test('security saturday night weights overtime before and after five', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Security']);
+    $jabatan = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-21',
+            'status' => 'present',
+            'first_in' => '17:00',
+            'first_out' => null,
+            'second_in' => null,
+            'second_out' => '06:29',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-21')
+        ->firstOrFail();
+
+    expect($record)
+        ->schedule_profile->toBe('security')
+        ->shift->toBe('night')
+        ->expected_check_out->toBe('00:00:00')
+        ->second_out_day_offset->toBe(1)
+        ->worked_hours->toBe('6.0')
+        ->overtime_hours->toBe('11.0')
+        ->comparison_notes->toContain('lembur pukul 00:00-05:00 dikali 2, setelah 05:00 dikali 1.');
+});
+
+test('saturday regular work uses six hours before lateness is deducted separately from overtime', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Production']);
+    $jabatan = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-21',
+            'status' => 'present',
+            'first_in' => '07:43',
+            'first_out' => '12:00',
+            'second_in' => '13:04',
+            'second_out' => '16:06',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-21')
+        ->firstOrFail();
+
+    expect($record)
+        ->status->toBe('late')
+        ->worked_hours->toBe('5.0')
+        ->overtime_hours->toBe('1.0')
+        ->late_minutes->toBe(4)
+        ->late_penalty_hours->toBe(1);
+});
+
 test('attendance defaults to five rows with missing punch first and supports late filter', function () {
     $admin = User::factory()->create(['role' => 5]);
     $missingEmployee = Karyawan::factory()->create(['nama' => 'Alpha Missing']);
@@ -199,6 +351,294 @@ test('attendance defaults to five rows with missing punch first and supports lat
             ->has('records.data', 1)
             ->where('records.data.0.employee.name', 'Alpha Missing')
             ->where('filters.lateOnly', true));
+});
+
+test('attendance exposes punch fields that caused lateness', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create(['nama' => 'Late Punch Employee']);
+    AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'late_minutes' => 25,
+        'comparison_notes' => implode(' ', [
+            'Terlambat masuk 10 menit.',
+            'Keluar istirahat 6 menit lebih awal.',
+            'Terlambat masuk istirahat 4 menit.',
+            'Checkout 5 menit lebih awal.',
+        ]),
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.employee.name', 'Late Punch Employee')
+            ->where('records.data.0.late_fields', [
+                'first_in',
+                'first_out',
+                'second_in',
+                'second_out',
+            ]));
+});
+
+test('attendance review filter shows unresolved and resolved records for the selected date', function () {
+    $admin = User::factory()->create([
+        'name' => 'Review Admin',
+        'role' => 5,
+    ]);
+    $pendingEmployee = Karyawan::factory()->create([
+        'nip' => 1001,
+        'nama' => 'Pending Review',
+    ]);
+    $resolvedEmployee = Karyawan::factory()->create([
+        'nip' => 1002,
+        'nama' => 'Resolved Review',
+    ]);
+    $normalEmployee = Karyawan::factory()->create(['nama' => 'Normal Attendance']);
+    $otherDateEmployee = Karyawan::factory()->create(['nama' => 'Other Date Review']);
+    AttendanceRecord::factory()->for($pendingEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'requires_review' => true,
+    ]);
+    AttendanceRecord::factory()->for($resolvedEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+    ]);
+    AttendanceRecord::factory()->for($normalEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'requires_review' => false,
+    ]);
+    AttendanceRecord::factory()->for($otherDateEmployee)->create([
+        'attendance_date' => '2026-11-20',
+        'requires_review' => true,
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'review_only' => 1,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('records.data', 2)
+            ->where('records.data.0.employee.name', 'Pending Review')
+            ->where('records.data.0.requires_review', true)
+            ->where('records.data.0.review_resolved_at', null)
+            ->where('records.data.1.employee.name', 'Resolved Review')
+            ->where('records.data.1.requires_review', false)
+            ->where('records.data.1.review_resolved_by', 'Review Admin')
+            ->where('filters.reviewOnly', true)
+            ->where('filters.sort', 'employee.nip')
+            ->where('filters.direction', 'asc'));
+});
+
+test('review filter keeps an edited record until review is done', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create(['nama' => 'Edited Review Employee']);
+    $record = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'first_in' => '08:10:00',
+        'has_missing_punch' => true,
+        'requires_review' => true,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '11:30',
+            'second_in' => '12:30',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeTrue()
+        ->review_resolved_at->toBeNull();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'review_only' => 1,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('records.data', 1)
+            ->where('records.data.0.employee.name', 'Edited Review Employee'));
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.resolve-review', $record))
+        ->assertRedirect();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'review_only' => 1,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('records.data', 1)
+            ->where('records.data.0.employee.name', 'Edited Review Employee')
+            ->where('records.data.0.requires_review', false)
+            ->where('records.data.0.review_resolved_by', $admin->name));
+});
+
+test('editing reviewed attendance requires another review', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create(['nama' => 'Previously Reviewed Employee']);
+    $record = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'present',
+        'first_in' => '08:00:00',
+        'first_out' => '12:00:00',
+        'second_in' => '13:00:00',
+        'second_out' => '17:00:00',
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+        'review_resolution_note' => 'Review sebelumnya.',
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '12:00',
+            'second_in' => '13:00',
+            'second_out' => '16:30',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeTrue()
+        ->review_resolved_at->toBeNull()
+        ->review_resolved_by->toBeNull()
+        ->review_resolution_note->toBeNull()
+        ->comparison_notes->toContain('Data diubah setelah review; menunggu review ulang.');
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'review_only' => 1,
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('records.data', 1)
+            ->where('records.data.0.employee.name', 'Previously Reviewed Employee')
+            ->where('records.data.0.requires_review', true));
+});
+
+test('saving reviewed attendance without changes preserves review', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+    $record = AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'present',
+        'first_in' => '08:00:00',
+        'first_out' => '12:00:00',
+        'second_in' => '13:00:00',
+        'second_out' => '17:00:00',
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+        'review_resolution_note' => 'Review sebelumnya.',
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '12:00',
+            'second_in' => '13:00',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeFalse()
+        ->review_resolved_at->not->toBeNull()
+        ->review_resolved_by->toBe($admin->id)
+        ->review_resolution_note->toBe('Review sebelumnya.');
+});
+
+test('unreviewed attendance keeps its order when edited data changes the selected sort', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $pendingEmployee = Karyawan::factory()->create([
+        'nip' => 2001,
+        'nama' => 'Pending Sort Employee',
+    ]);
+    $reviewedEmployee = Karyawan::factory()->create([
+        'nip' => 2002,
+        'nama' => 'Reviewed Sort Employee',
+    ]);
+    AttendanceRecord::factory()->for($pendingEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'first_in' => '08:10:00',
+        'late_minutes' => 10,
+        'has_missing_punch' => true,
+        'requires_review' => true,
+    ]);
+    AttendanceRecord::factory()->for($reviewedEmployee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'first_in' => '08:05:00',
+        'late_minutes' => 5,
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+    ]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'sort' => 'late_minutes',
+            'direction' => 'desc',
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.employee.name', 'Pending Sort Employee'));
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $pendingEmployee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'present',
+            'first_in' => '08:00',
+            'first_out' => '12:00',
+            'second_in' => '13:00',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', [
+            'date' => '2026-11-19',
+            'sort' => 'late_minutes',
+            'direction' => 'desc',
+        ]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.employee.name', 'Pending Sort Employee')
+            ->where('records.data.0.requires_review', true)
+            ->where('records.data.1.employee.name', 'Reviewed Sort Employee'));
 });
 
 test('admin can delete all attendance records for one date', function () {
@@ -405,6 +845,50 @@ test('correcting punches recalculates hours but keeps review for admin resolutio
         ->review_resolved_at->toBeNull();
 });
 
+test('inline edit removes late status when corrected punches are on schedule', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $employee = Karyawan::factory()->create();
+    AttendanceRecord::factory()->for($employee)->create([
+        'attendance_date' => '2026-11-19',
+        'status' => 'late',
+        'first_in' => '08:10:00',
+        'late_minutes' => 10,
+        'late_penalty_hours' => 1,
+    ]);
+
+    $this->actingAs($admin)
+        ->put(route('admin.attendance.update-inline'), [
+            'karyawan_id' => $employee->id,
+            'attendance_date' => '2026-11-19',
+            'status' => 'late',
+            'first_in' => '08:00',
+            'first_out' => '11:30',
+            'second_in' => '12:30',
+            'second_out' => '17:00',
+            'overtime_in' => null,
+            'overtime_out' => null,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-19')
+        ->firstOrFail();
+
+    expect($record)
+        ->status->toBe('present')
+        ->late_minutes->toBe(0)
+        ->late_penalty_hours->toBeNull();
+
+    $this->actingAs($admin)
+        ->get(route('admin.attendance.index', ['date' => '2026-11-19']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('records.data.0.status', 'present')
+            ->where('records.data.0.status_label', 'Hadir')
+            ->where('records.data.0.late_minutes', 0));
+});
+
 test('inline edit marks an early break out as late', function () {
     $admin = User::factory()->create(['role' => 5]);
     $department = Department::factory()->create(['name' => 'Production']);
@@ -412,7 +896,7 @@ test('inline edit marks an early break out as late', function () {
     $employee = Karyawan::factory()->create([
         'department_id' => $department->id,
         'jabatan_id' => $jabatan->id,
-        'metode_penggajian' => 'Per Jam',
+        'metode_penggajian' => PayrollMethod::Hourly->value,
     ]);
 
     $this->actingAs($admin)
@@ -497,7 +981,7 @@ test('inline edit reviews attendance when only one overtime punch exists', funct
         ->comparison_notes->toContain('Pasangan masuk dan keluar lembur tidak lengkap.');
 });
 
-test('admin can clear review without changing attendance punches', function () {
+test('admin can resolve review without changing attendance punches', function () {
     $admin = User::factory()->create(['role' => 5]);
     $employee = Karyawan::factory()->create();
     $record = AttendanceRecord::factory()->for($employee)->create([
@@ -508,7 +992,7 @@ test('admin can clear review without changing attendance punches', function () {
     ]);
 
     $this->actingAs($admin)
-        ->delete(route('admin.attendance.destroy-review', $record))
+        ->put(route('admin.attendance.resolve-review', $record))
         ->assertRedirect();
 
     expect($record->refresh())
@@ -517,7 +1001,27 @@ test('admin can clear review without changing attendance punches', function () {
         ->comparison_notes->toBe('Punch keluar belum lengkap.')
         ->review_resolved_at->not->toBeNull()
         ->review_resolved_by->toBe($admin->id)
-        ->review_resolution_note->toBe('Review dihapus manual oleh admin.');
+        ->review_resolution_note->toBe('Data ditandai sudah benar oleh admin.');
+});
+
+test('admin can delete review metadata without marking data correct', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $record = AttendanceRecord::factory()->create([
+        'requires_review' => false,
+        'review_resolved_at' => now(),
+        'review_resolved_by' => $admin->id,
+        'review_resolution_note' => 'Data sebelumnya ditandai benar.',
+    ]);
+
+    $this->actingAs($admin)
+        ->delete(route('admin.attendance.destroy-review', $record))
+        ->assertRedirect();
+
+    expect($record->refresh())
+        ->requires_review->toBeFalse()
+        ->review_resolved_at->toBeNull()
+        ->review_resolved_by->toBeNull()
+        ->review_resolution_note->toBeNull();
 });
 
 test('attendance shows monthly review count and penalty after three reviews', function () {
@@ -547,7 +1051,7 @@ test('attendance shows monthly review count and penalty after three reviews', fu
             ->where('records.data.0.review_penalty_hours', 1));
 });
 
-test('non admin cannot clear attendance review', function () {
+test('non admin cannot resolve or delete attendance review', function () {
     $user = User::factory()->create(['role' => 4]);
     $record = AttendanceRecord::factory()->create([
         'requires_review' => true,
@@ -555,6 +1059,9 @@ test('non admin cannot clear attendance review', function () {
 
     $this->actingAs($user)
         ->delete(route('admin.attendance.destroy-review', $record))
+        ->assertForbidden();
+    $this->actingAs($user)
+        ->put(route('admin.attendance.resolve-review', $record))
         ->assertForbidden();
 
     expect($record->refresh()->requires_review)->toBeTrue();

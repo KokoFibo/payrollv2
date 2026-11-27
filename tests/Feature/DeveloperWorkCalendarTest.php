@@ -241,7 +241,7 @@ test('developer can apply and revise a bulk schedule and existing attendance is 
     expect($attendance->refresh())
         ->expected_check_in->toBe('09:00:00')
         ->expected_check_out->toBe('15:00:00')
-        ->worked_hours->toBe('5.0');
+        ->worked_hours->toBe('6.0');
 
     $payload['schedules'][0]['enabled'] = false;
 

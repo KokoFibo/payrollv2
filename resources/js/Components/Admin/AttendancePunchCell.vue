@@ -9,6 +9,7 @@ const props = defineProps({
     invalid: { type: Boolean, default: false },
     disabled: { type: Boolean, default: false },
     dropActive: { type: Boolean, default: false },
+    late: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -54,7 +55,9 @@ function drop(event) {
             class="flex min-h-10 items-center gap-1 rounded-xl border px-1.5 py-1 transition"
             :class="dropActive
                 ? 'border-brand-400 bg-brand-50 ring-2 ring-brand-200 dark:border-brand-400 dark:bg-brand-500/10 dark:ring-brand-500/30'
-                : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900'"
+                : late
+                    ? 'border-orange-300 bg-orange-50 ring-1 ring-orange-200 dark:border-orange-500/50 dark:bg-orange-500/10 dark:ring-orange-500/30'
+                    : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900'"
             @dragover="dragOver"
             @drop="drop"
         >
@@ -80,6 +83,7 @@ function drop(event) {
                 :model-value="modelValue"
                 type="time"
                 class="min-w-0 flex-1"
+                :class="{ 'font-semibold text-orange-700 dark:text-orange-300': late }"
                 :invalid="invalid"
                 :disabled="disabled"
                 :aria-label="label"
@@ -99,7 +103,12 @@ function drop(event) {
             />
         </div>
     </div>
-    <span v-else class="inline-flex items-center gap-1.5 whitespace-nowrap">
+    <span
+        v-else
+        class="inline-flex items-center gap-1.5 whitespace-nowrap"
+        :class="late ? 'rounded-md bg-orange-50 px-1.5 py-0.5 font-semibold text-orange-700 ring-1 ring-orange-200 dark:bg-orange-500/10 dark:text-orange-300 dark:ring-orange-500/30' : ''"
+        :title="late ? 'Jam ini menyebabkan keterlambatan' : null"
+    >
         <span>{{ displayValue || "-" }}</span>
         <Tag v-if="displayValue && dayOffset" severity="secondary" class="text-[9px]">+{{ dayOffset }}d</Tag>
     </span>

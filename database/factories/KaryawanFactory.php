@@ -4,6 +4,7 @@ namespace Database\Factories;
 
 use App\Enums\KaryawanStatus;
 use App\Enums\OutsourceType;
+use App\Enums\PayrollMethod;
 use App\Models\Company;
 use App\Models\Department;
 use App\Models\Directorate;
@@ -36,7 +37,7 @@ class KaryawanFactory extends Factory
             'jenis_identitas' => 'KTP',
             'no_identitas' => fake()->unique()->numerify('################'),
             'alamat_identitas' => fake()->address(),
-            'alamat_tinggal' => fake()->address(),
+            'alamat_tinggal_sekarang' => fake()->address(),
             'status_karyawan' => $status,
             'tanggal_bergabung' => fake()->dateTimeBetween('-10 years', 'now')->format('Y-m-d'),
             'tanggal_resigned' => $status === KaryawanStatus::Resigned->value
@@ -51,7 +52,7 @@ class KaryawanFactory extends Factory
             'jabatan_id' => Jabatan::factory(),
             'job_grade_id' => JobGrade::factory(),
             'outsource' => OutsourceType::Os->value,
-            'metode_penggajian' => 'Bulanan',
+            'metode_penggajian' => PayrollMethod::Monthly->value,
             'gaji_pokok' => fake()->numberBetween(4_000_000, 25_000_000),
             'gaji_overtime' => fake()->numberBetween(100_000, 2_000_000),
             'iuran_air' => fake()->numberBetween(0, 200_000),

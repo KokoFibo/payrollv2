@@ -10,8 +10,10 @@ use App\Models\Department;
 use App\Models\Directorate;
 use App\Models\Jabatan;
 use App\Models\Karyawan;
+use App\Models\SpecialWorkSchedule;
 use App\Support\Attendance\AttendanceAnomalyScanner;
 use App\Support\Attendance\AttendanceRecordEditor;
+use App\Support\Attendance\AttendanceScheduleGuideData;
 use App\Support\Attendance\NationalHolidayResolver;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
@@ -52,6 +54,7 @@ class AttendanceController extends Controller
     public function index(
         Request $request,
         NationalHolidayResolver $holidayResolver,
+        AttendanceScheduleGuideData $scheduleGuideData,
     ): Response {
         Gate::authorize('manage-payroll');
 
@@ -61,17 +64,26 @@ class AttendanceController extends Controller
             (string) $request->query('date', $latestAttendanceDate),
         );
         $status = (string) $request->query('status', '');
+        $shift = (string) $request->query('shift', '');
+        $shift = in_array($shift, ['day', 'night'], true) ? $shift : '';
         $companyId = (string) $request->query('company_id', '');
         $directorateId = (string) $request->query('directorate_id', '');
         $departmentId = (string) $request->query('department_id', '');
         $jabatanId = (string) $request->query('jabatan_id', '');
         $search = trim((string) $request->query('search', ''));
         $lateOnly = $request->boolean('late_only');
+        $reviewOnly = $request->boolean('review_only');
         $sort = (string) $request->query('sort', 'has_missing_punch');
         $direction = strtolower((string) $request->query('direction', 'desc')) === 'asc'
             ? 'asc'
             : 'desc';
         $sort = array_key_exists($sort, self::SORT_COLUMNS) ? $sort : 'has_missing_punch';
+
+        if ($reviewOnly) {
+            $sort = 'employee.nip';
+            $direction = 'asc';
+        }
+
         $requestedPerPage = $request->integer('perPage', 5);
         $perPage = in_array($requestedPerPage, [5, 10, 15, 25, 50, 100], true)
             ? $requestedPerPage
@@ -82,12 +94,14 @@ class AttendanceController extends Controller
         $records = $this->filteredQuery(
             $attendanceDate,
             $status,
+            $shift,
             $companyId,
             $directorateId,
             $departmentId,
             $jabatanId,
             $search,
             $lateOnly,
+            $reviewOnly,
             $sort,
             $direction,
         )
@@ -113,6 +127,35 @@ class AttendanceController extends Controller
                 'late_count' => $import->late_count,
                 'unmatched_user_ids' => array_slice($import->unmatched_user_ids ?? [], 0, 10),
             ]);
+        $specialWorkSchedules = SpecialWorkSchedule::query()
+            ->with(['company:id,name'])
+            ->orderByDesc('starts_on')
+            ->orderBy('name')
+            ->orderBy('schedule_profile')
+            ->orderBy('shift')
+            ->get()
+            ->map(fn (SpecialWorkSchedule $schedule): array => [
+                'id' => $schedule->id,
+                'name' => $schedule->name,
+                'starts_on' => $schedule->starts_on->toDateString(),
+                'ends_on' => $schedule->ends_on->toDateString(),
+                'scope' => $schedule->company?->name ?? 'Semua company',
+                'profile' => $schedule->schedule_profile
+                    ? (SpecialWorkSchedule::PROFILES[$schedule->schedule_profile] ?? $schedule->schedule_profile)
+                    : 'Semua profile',
+                'day_type' => $schedule->day_type
+                    ? (SpecialWorkSchedule::DAY_TYPES[$schedule->day_type] ?? $schedule->day_type)
+                    : 'Semua hari',
+                'shift' => $schedule->shift
+                    ? (SpecialWorkSchedule::SHIFTS[$schedule->shift] ?? $schedule->shift)
+                    : 'Semua shift',
+                'check_in' => substr($schedule->check_in, 0, 5),
+                'check_out' => substr($schedule->check_out, 0, 5),
+                'check_out_day_offset' => $schedule->check_out_day_offset,
+                'standard_work_hours' => (float) $schedule->standard_work_hours,
+                'expected_punch_count' => $schedule->expected_punch_count,
+                'notes' => $schedule->notes,
+            ]);
         $directorateOptions = $this->directorateOptions($companyId);
         $departmentOptions = $this->departmentOptions($companyId, $directorateId);
         $jabatanOptions = $this->jabatanOptions($companyId, $directorateId, $departmentId);
@@ -120,9 +163,17 @@ class AttendanceController extends Controller
         return Inertia::render('Attendance/Index', [
             'records' => $records,
             'recentImports' => $recentImports,
+            'specialWorkSchedules' => $specialWorkSchedules,
+            'scheduleGuide' => [
+                'filename' => AttendanceScheduleGuideController::TemplateFilename,
+                'downloadAvailable' => is_file(AttendanceScheduleGuideController::templatePath()),
+                'profiles' => $scheduleGuideData->profiles(),
+                'requirements' => $scheduleGuideData->requirements(),
+            ],
             'filters' => [
                 'date' => $attendanceDate,
                 'status' => $status,
+                'shift' => $shift,
                 'companyId' => $companyId,
                 'directorateId' => $directorateId,
                 'departmentId' => $departmentId,
@@ -130,6 +181,7 @@ class AttendanceController extends Controller
                 'search' => $search,
                 'perPage' => $perPage,
                 'lateOnly' => $lateOnly,
+                'reviewOnly' => $reviewOnly,
                 'sort' => $sort,
                 'direction' => $direction,
             ],
@@ -138,6 +190,10 @@ class AttendanceController extends Controller
                     ->map(fn (string $label, string $value): array => compact('value', 'label'))
                     ->values()
                     ->all(),
+                'shifts' => [
+                    ['value' => 'day', 'label' => 'Shift pagi'],
+                    ['value' => 'night', 'label' => 'Shift malam'],
+                ],
                 'companies' => Company::query()
                     ->whereNotNull('name')
                     ->orderBy('name')
@@ -263,10 +319,43 @@ class AttendanceController extends Controller
     ): RedirectResponse {
         Gate::authorize('manage-payroll');
 
+        if (
+            ! $attendance->requires_review
+            && $attendance->review_resolved_at === null
+            && $attendance->review_resolved_by === null
+        ) {
+            return back()->with('toast', [
+                'type' => 'info',
+                'title' => 'Review tidak ditemukan',
+                'message' => 'Attendance ini tidak memiliki status atau riwayat review.',
+            ]);
+        }
+
+        $attendance->loadMissing('karyawan:id,nama');
+        $attendance->update([
+            'requires_review' => false,
+            'review_resolved_at' => null,
+            'review_resolved_by' => null,
+            'review_resolution_note' => null,
+        ]);
+
+        return back()->with('toast', [
+            'type' => 'success',
+            'title' => 'Review dihapus',
+            'message' => "Status review attendance {$attendance->karyawan->nama} berhasil dihapus tanpa ditandai sudah benar.",
+        ]);
+    }
+
+    public function resolveReview(
+        Request $request,
+        AttendanceRecord $attendance,
+    ): RedirectResponse {
+        Gate::authorize('manage-payroll');
+
         if (! $attendance->requires_review) {
             return back()->with('toast', [
                 'type' => 'info',
-                'title' => 'Review sudah dihapus',
+                'title' => 'Review sudah selesai',
                 'message' => 'Attendance ini tidak memiliki status review aktif.',
             ]);
         }
@@ -276,13 +365,13 @@ class AttendanceController extends Controller
             'requires_review' => false,
             'review_resolved_at' => now(),
             'review_resolved_by' => $request->user()->id,
-            'review_resolution_note' => 'Review dihapus manual oleh admin.',
+            'review_resolution_note' => 'Data ditandai sudah benar oleh admin.',
         ]);
 
         return back()->with('toast', [
             'type' => 'success',
-            'title' => 'Review dihapus',
-            'message' => "Review attendance {$attendance->karyawan->nama} berhasil dihapus tanpa mengubah punch.",
+            'title' => 'Review diselesaikan',
+            'message' => "Data attendance {$attendance->karyawan->nama} ditandai sudah benar tanpa mengubah punch.",
         ]);
     }
 
@@ -402,6 +491,7 @@ class AttendanceController extends Controller
             'ignored_punch_count' => $record->ignored_punch_count,
             'late_minutes' => $record->late_minutes,
             'late_penalty_hours' => $record->late_penalty_hours,
+            'late_fields' => $this->latePunchFields($record),
             'early_leave_minutes' => $record->early_leave_minutes,
             'has_missing_punch' => $record->has_missing_punch,
             'has_duplicate_punch' => $record->has_duplicate_punch,
@@ -431,12 +521,14 @@ class AttendanceController extends Controller
     private function filteredQuery(
         string $attendanceDate,
         string $status,
+        string $shift,
         string $companyId,
         string $directorateId,
         string $departmentId,
         string $jabatanId,
         string $search,
         bool $lateOnly,
+        bool $reviewOnly,
         string $sort,
         string $direction,
     ): Builder {
@@ -463,7 +555,14 @@ class AttendanceController extends Controller
                 'reviewResolvedBy:id,name',
             ])
             ->when($status !== '', fn (Builder $query) => $query->where('attendance_records.status', $status))
+            ->when($shift !== '', fn (Builder $query) => $query->where('attendance_records.shift', $shift))
             ->when($lateOnly, fn (Builder $query) => $query->where('attendance_records.late_minutes', '>', 3))
+            ->when($reviewOnly, function (Builder $query): void {
+                $query->where(function (Builder $query): void {
+                    $query->where('attendance_records.requires_review', true)
+                        ->orWhereNotNull('attendance_records.review_resolved_at');
+                });
+            })
             ->when($companyId !== '', fn (Builder $query) => $query->where('employees.company_id', $companyId))
             ->when($directorateId !== '', fn (Builder $query) => $query->where('employees.directorate_id', $directorateId))
             ->when($departmentId !== '', fn (Builder $query) => $query->where('employees.department_id', $departmentId))
@@ -474,6 +573,8 @@ class AttendanceController extends Controller
                         ->orWhere('employees.nip', 'like', "%{$search}%");
                 });
             })
+            ->orderByRaw('CASE WHEN attendance_records.requires_review = 1 THEN 0 ELSE 1 END')
+            ->orderByRaw('CASE WHEN attendance_records.requires_review = 1 THEN employees.nip END ASC')
             ->orderBy(self::SORT_COLUMNS[$sort], $direction)
             ->orderBy('attendance_records.id');
     }
@@ -590,6 +691,56 @@ class AttendanceController extends Controller
     private function shortTime(?string $time): ?string
     {
         return $time ? substr($time, 0, 5) : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function latePunchFields(AttendanceRecord $record): array
+    {
+        if ($record->late_minutes <= 0) {
+            return [];
+        }
+
+        $notes = (string) $record->comparison_notes;
+        $fields = [];
+        $firstInMinutes = $this->timeInMinutes($record->first_in);
+        $expectedCheckInMinutes = $this->timeInMinutes($record->expected_check_in);
+        $toleranceMinutes = (int) config('attendance.tolerance_minutes', 3);
+
+        if (
+            preg_match('/Terlambat masuk \d+ menit\./iu', $notes) === 1
+            || (
+                $firstInMinutes !== null
+                && $expectedCheckInMinutes !== null
+                && $firstInMinutes - $expectedCheckInMinutes > $toleranceMinutes
+            )
+        ) {
+            $fields[] = 'first_in';
+        }
+
+        if (str_contains($notes, 'Keluar istirahat') && str_contains($notes, 'lebih awal')) {
+            $fields[] = 'first_out';
+        }
+
+        if (str_contains($notes, 'Terlambat masuk istirahat')) {
+            $fields[] = 'second_in';
+        }
+
+        if (str_contains($notes, 'Checkout') && str_contains($notes, 'lebih awal')) {
+            $fields[] = 'second_out';
+        }
+
+        return array_values(array_unique($fields));
+    }
+
+    private function timeInMinutes(?string $time): ?int
+    {
+        if ($time === null || ! preg_match('/^(\d{1,2}):(\d{2})/', $time, $matches)) {
+            return null;
+        }
+
+        return ((int) $matches[1] * 60) + (int) $matches[2];
     }
 
     /**

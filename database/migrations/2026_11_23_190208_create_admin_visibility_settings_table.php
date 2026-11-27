@@ -11,6 +11,7 @@ return new class extends Migration
         Schema::create('admin_visibility_settings', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('admin_salary_limit')->default(4_500_000);
+            $table->unsignedSmallInteger('attendance_tolerance_minutes')->default(3);
             $table->timestamps();
         });
     }

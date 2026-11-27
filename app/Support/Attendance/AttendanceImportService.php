@@ -113,7 +113,9 @@ class AttendanceImportService
                 $schedule,
             );
             $checkOutDifference = $this->minuteDifference($schedule->expectedCheckOut, $lastPunch);
-            $earlyLeaveMinutes = ! $hasMissingPunch ? max(0, -$checkOutDifference) : 0;
+            $earlyLeaveMinutes = $schedule->profile !== 'security' && ! $hasMissingPunch
+                ? max(0, -$checkOutDifference)
+                : 0;
             $latePenaltyHours = $lateness['penalty_hours'] > 0
                 ? $lateness['penalty_hours']
                 : null;

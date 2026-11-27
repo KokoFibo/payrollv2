@@ -45,7 +45,7 @@ return [
                 ],
                 'friday' => [
                     'day' => ['check_in' => '08:00', 'check_out' => '17:00', 'check_out_day_offset' => 0, 'standard_hours' => 7.5, 'break_window' => ['11:30', '13:00'], 'break_rules' => [['out' => '11:30', 'in' => '13:00']]],
-                    'night' => ['check_in' => '20:00', 'check_out' => '05:00', 'check_out_day_offset' => 1, 'standard_hours' => 7.5, 'break_window' => ['23:00', '01:00'], 'break_rules' => $nightBreakRules],
+                    'night' => ['check_in' => '20:00', 'check_out' => '05:00', 'check_out_day_offset' => 1, 'standard_hours' => 8, 'break_window' => ['23:00', '01:00'], 'break_rules' => $nightBreakRules],
                 ],
                 'saturday' => [
                     'day' => ['check_in' => '08:00', 'check_out' => '15:00', 'check_out_day_offset' => 0, 'standard_hours' => 6, 'break_window' => ['11:30', '13:00'], 'break_rules' => $saturdayDayBreakRules],
@@ -83,7 +83,7 @@ return [
                 ],
                 'friday' => [
                     'day' => ['check_in' => '08:00', 'check_out' => '17:00', 'check_out_day_offset' => 0, 'standard_hours' => 7.5, 'break_window' => ['10:00', '13:00'], 'break_rules' => $qcFridayBreakRules],
-                    'night' => ['check_in' => '20:00', 'check_out' => '05:00', 'check_out_day_offset' => 1, 'standard_hours' => 7.5, 'break_window' => ['23:00', '01:00'], 'break_rules' => $nightBreakRules],
+                    'night' => ['check_in' => '20:00', 'check_out' => '05:00', 'check_out_day_offset' => 1, 'standard_hours' => 8, 'break_window' => ['23:00', '01:00'], 'break_rules' => $nightBreakRules],
                 ],
                 'saturday' => [
                     'day' => ['check_in' => '08:00', 'check_out' => '15:00', 'check_out_day_offset' => 0, 'standard_hours' => 6, 'break_window' => ['11:00', '13:00'], 'break_rules' => $qcDayBreakRules],

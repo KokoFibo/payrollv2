@@ -7,11 +7,11 @@ import FormField from "@/Components/Admin/FormField.vue";
 
 const props = defineProps({
     employee: { type: Object, default: null },
-    salaryLocked: { type: Boolean, default: false },
+    salaryRestricted: { type: Boolean, default: false },
     options: { type: Object, required: true },
 });
 
-const editing = computed(() => Boolean(props.employee?.id));
+const editing = computed(() => Boolean(props.employee?.uuid));
 const section = ref("pribadi");
 
 const defaults = {
@@ -29,7 +29,7 @@ const defaults = {
     jenis_identitas: "KTP",
     no_identitas: "",
     alamat_identitas: "",
-    alamat_tinggal: "",
+    alamat_tinggal_sekarang: "",
     status_karyawan: "PKWT",
     tanggal_bergabung: "",
     tanggal_resigned: "",
@@ -41,7 +41,7 @@ const defaults = {
     job_grade_id: null,
     nama_bank: "",
     nomor_rekening: "",
-    metode_penggajian: "Bulanan",
+    metode_penggajian: "monthly",
     gaji_pokok: null,
     gaji_tetap: null,
     gaji_overtime: null,
@@ -64,12 +64,12 @@ const defaults = {
     potongan_kesehatan: false,
     no_npwp: "",
     ptkp: "",
-    kontak_darurat: "",
-    kontak_darurat2: "",
-    hp1: "",
-    hp2: "",
-    hubungan1: "",
-    hubungan2: "",
+    nama_contact_darurat: "",
+    nama_contact_darurat_2: "",
+    contact_darurat_1: "",
+    contact_darurat_2: "",
+    hubungan_1: "",
+    hubungan_2: "",
     tanggungan: null,
     pendidikan: "",
     jurusan: "",
@@ -83,16 +83,24 @@ const initialData = reactive({
 
 const form = useForm({ ...initialData });
 
+const baseSalaryField = computed(() => (
+    form.metode_penggajian === "hourly"
+        ? {
+            label: "Tarif per Jam",
+            hint: "Nominal Rupiah untuk setiap jam kerja.",
+        }
+        : {
+            label: "Gaji Pokok",
+            hint: "Nominal Rupiah per bulan.",
+        }
+));
+
 const tabs = [
     { value: "pribadi", label: "Data Pribadi", icon: "pi pi-user" },
     { value: "identitas", label: "Identitas", icon: "pi pi-id-card" },
     { value: "kepegawaian", label: "Kepegawaian", icon: "pi pi-briefcase" },
     { value: "payroll", label: "Payroll", icon: "pi pi-wallet" },
 ];
-
-const visibleTabs = computed(() => props.salaryLocked
-    ? tabs.filter((tab) => tab.value !== "payroll")
-    : tabs);
 
 const allowanceFields = [
     ["bonus", "Bonus"],
@@ -114,12 +122,16 @@ const deductionFields = [
 
 function submit() {
     if (editing.value) {
-        form.put(route("admin.employees.update", props.employee.id));
+        form.put(route("admin.employees.update", props.employee.uuid));
 
         return;
     }
 
     form.post(route("admin.employees.store"));
+}
+
+function canEditPayrollField(field) {
+    return !props.salaryRestricted || !["gaji_pokok", "gaji_tetap"].includes(field);
 }
 </script>
 
@@ -144,13 +156,9 @@ function submit() {
                 Periksa kembali kolom bertanda merah sebelum menyimpan.
             </Message>
 
-            <Message v-if="salaryLocked" severity="warn" :closable="false">
-                Data payroll karyawan ini dikunci karena gaji pokoknya melebihi batas akses Admin. Data pribadi dan kepegawaian tetap dapat diedit.
-            </Message>
-
             <nav class="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200/80 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:grid-cols-4" aria-label="Tahapan formulir">
                 <Button
-                    v-for="tab in visibleTabs"
+                    v-for="tab in tabs"
                     :key="tab.value"
                     type="button"
                     :label="tab.label"
@@ -245,23 +253,23 @@ function submit() {
                             <div>
                                 <h3 class="mb-4 text-sm font-bold text-slate-800 dark:text-slate-100">Kontak darurat</h3>
                                 <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                                    <FormField label="Nama Kontak Darurat 1" :error="form.errors.kontak_darurat">
-                                        <InputText v-model="form.kontak_darurat" placeholder="Nama kontak" class="w-full" />
+                                    <FormField label="Nama Kontak Darurat 1" :error="form.errors.nama_contact_darurat">
+                                        <InputText v-model="form.nama_contact_darurat" placeholder="Nama kontak" class="w-full" />
                                     </FormField>
-                                    <FormField label="HP Kontak Darurat 1" :error="form.errors.hp1">
-                                        <InputText v-model="form.hp1" placeholder="08xxxxxxxxxx" class="w-full" />
+                                    <FormField label="HP Kontak Darurat 1" :error="form.errors.contact_darurat_1">
+                                        <InputText v-model="form.contact_darurat_1" placeholder="08xxxxxxxxxx" class="w-full" />
                                     </FormField>
-                                    <FormField label="Hubungan 1" :error="form.errors.hubungan1">
-                                        <InputText v-model="form.hubungan1" placeholder="Contoh: Orang tua" class="w-full" />
+                                    <FormField label="Hubungan 1" :error="form.errors.hubungan_1">
+                                        <InputText v-model="form.hubungan_1" placeholder="Contoh: Orang tua" class="w-full" />
                                     </FormField>
-                                    <FormField label="Nama Kontak Darurat 2" :error="form.errors.kontak_darurat2">
-                                        <InputText v-model="form.kontak_darurat2" placeholder="Nama kontak" class="w-full" />
+                                    <FormField label="Nama Kontak Darurat 2" :error="form.errors.nama_contact_darurat_2">
+                                        <InputText v-model="form.nama_contact_darurat_2" placeholder="Nama kontak" class="w-full" />
                                     </FormField>
-                                    <FormField label="HP Kontak Darurat 2" :error="form.errors.hp2">
-                                        <InputText v-model="form.hp2" placeholder="08xxxxxxxxxx" class="w-full" />
+                                    <FormField label="HP Kontak Darurat 2" :error="form.errors.contact_darurat_2">
+                                        <InputText v-model="form.contact_darurat_2" placeholder="08xxxxxxxxxx" class="w-full" />
                                     </FormField>
-                                    <FormField label="Hubungan 2" :error="form.errors.hubungan2">
-                                        <InputText v-model="form.hubungan2" placeholder="Contoh: Saudara" class="w-full" />
+                                    <FormField label="Hubungan 2" :error="form.errors.hubungan_2">
+                                        <InputText v-model="form.hubungan_2" placeholder="Contoh: Saudara" class="w-full" />
                                     </FormField>
                                 </div>
                             </div>
@@ -289,8 +297,8 @@ function submit() {
                             <FormField label="Alamat Sesuai Identitas" :error="form.errors.alamat_identitas" required>
                                 <Textarea v-model="form.alamat_identitas" rows="4" placeholder="Alamat pada dokumen identitas" class="w-full" />
                             </FormField>
-                            <FormField label="Alamat Tinggal" :error="form.errors.alamat_tinggal" required>
-                                <Textarea v-model="form.alamat_tinggal" rows="4" placeholder="Alamat domisili saat ini" class="w-full" />
+                            <FormField label="Alamat Tinggal Sekarang" :error="form.errors.alamat_tinggal_sekarang" required>
+                                <Textarea v-model="form.alamat_tinggal_sekarang" rows="4" placeholder="Alamat domisili saat ini" class="w-full" />
                             </FormField>
                         </div>
                     </template>
@@ -345,7 +353,7 @@ function submit() {
                 </Card>
             </section>
 
-            <section v-if="!salaryLocked" v-show="section === 'payroll'" class="space-y-6">
+            <section v-show="section === 'payroll'" class="space-y-6">
                 <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
                     <template #title>
                         <div class="px-1">
@@ -359,13 +367,55 @@ function submit() {
                                 <h3 class="mb-4 text-sm font-bold text-slate-800 dark:text-slate-100">Komponen utama</h3>
                                 <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                                     <FormField label="Metode Penggajian" :error="form.errors.metode_penggajian" required>
-                                        <InputText v-model="form.metode_penggajian" placeholder="Contoh: Bulanan" class="w-full" />
+                                        <Select
+                                            v-model="form.metode_penggajian"
+                                            :options="options.payrollMethods"
+                                            option-label="label"
+                                            option-value="value"
+                                            placeholder="Pilih metode penggajian"
+                                            class="w-full"
+                                        />
                                     </FormField>
-                                    <FormField label="Gaji Pokok" :error="form.errors.gaji_pokok" required hint="Nominal Rupiah.">
-                                        <InputNumber v-model="form.gaji_pokok" mode="currency" currency="IDR" locale="id-ID" :min="0" class="w-full" input-class="w-full" />
+                                    <FormField
+                                        :label="baseSalaryField.label"
+                                        :error="form.errors.gaji_pokok"
+                                        :required="canEditPayrollField('gaji_pokok')"
+                                        :hint="canEditPayrollField('gaji_pokok') ? baseSalaryField.hint : ''"
+                                    >
+                                        <InputNumber
+                                            v-if="canEditPayrollField('gaji_pokok')"
+                                            v-model="form.gaji_pokok"
+                                            mode="currency"
+                                            currency="IDR"
+                                            locale="id-ID"
+                                            :min="0"
+                                            class="w-full"
+                                            input-class="w-full"
+                                        />
+                                        <div v-else class="relative">
+                                            <InputText model-value="••••••" disabled aria-label="Gaji pokok disembunyikan" class="w-full pr-10" />
+                                            <i class="pi pi-lock pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-amber-500" aria-hidden="true" />
+                                        </div>
                                     </FormField>
-                                    <FormField label="Gaji Tetap" :error="form.errors.gaji_tetap" hint="Tambahan di luar gaji pokok.">
-                                        <InputNumber v-model="form.gaji_tetap" mode="currency" currency="IDR" locale="id-ID" :min="0" class="w-full" input-class="w-full" />
+                                    <FormField
+                                        label="Gaji Tetap"
+                                        :error="form.errors.gaji_tetap"
+                                        :hint="canEditPayrollField('gaji_tetap') ? 'Tambahan di luar gaji pokok.' : ''"
+                                    >
+                                        <InputNumber
+                                            v-if="canEditPayrollField('gaji_tetap')"
+                                            v-model="form.gaji_tetap"
+                                            mode="currency"
+                                            currency="IDR"
+                                            locale="id-ID"
+                                            :min="0"
+                                            class="w-full"
+                                            input-class="w-full"
+                                        />
+                                        <div v-else class="relative">
+                                            <InputText model-value="••••••" disabled aria-label="Gaji tetap disembunyikan" class="w-full pr-10" />
+                                            <i class="pi pi-lock pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-amber-500" aria-hidden="true" />
+                                        </div>
                                     </FormField>
                                     <FormField label="Gaji Overtime" :error="form.errors.gaji_overtime" required>
                                         <InputNumber v-model="form.gaji_overtime" mode="currency" currency="IDR" locale="id-ID" :min="0" class="w-full" input-class="w-full" />
@@ -377,7 +427,7 @@ function submit() {
                                         <InputText v-model="form.no_npwp" placeholder="Nomor NPWP" class="w-full" />
                                     </FormField>
                                     <FormField label="PTKP" :error="form.errors.ptkp">
-                                        <Select v-model="form.ptkp" :options="options.ptkp" option-label="label" option-value="value" show-clear class="w-full" />
+                                        <Select v-model="form.ptkp" :options="options.ptkp" option-label="label" option-value="value" placeholder="Pilih PTKP" show-clear class="w-full" />
                                     </FormField>
                                 </div>
                             </div>

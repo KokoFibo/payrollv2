@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\PayrollMethod;
 use App\Models\AdminVisibilitySetting;
 use App\Models\AttendanceImport;
 use App\Models\AttendanceRecord;
@@ -30,14 +31,14 @@ test('admin imports attendance with employee matching and schedule comparison', 
             'nama' => 'Database Employee',
             'department_id' => $production->id,
             'jabatan_id' => $generalWorker->id,
-            'metode_penggajian' => 'Bulanan',
+            'metode_penggajian' => PayrollMethod::Monthly->value,
         ]),
         1002 => Karyawan::factory()->create([
             'nip' => 1002,
             'nama' => 'Hourly Late Employee',
             'department_id' => $production->id,
             'jabatan_id' => $generalWorker->id,
-            'metode_penggajian' => 'Per Jam',
+            'metode_penggajian' => PayrollMethod::Hourly->value,
         ]),
         1003 => Karyawan::factory()->create([
             'nip' => 1003,
@@ -124,7 +125,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->and($import->raw_punch_count)->toBe(23)
         ->and($import->duplicate_punch_count)->toBe(2)
         ->and($import->missing_punch_count)->toBe(1)
-        ->and($import->late_count)->toBe(3)
+        ->and($import->late_count)->toBe(2)
         ->and($import->unmatched_user_ids)->toBe(['9999']);
 
     $records = AttendanceRecord::query()
@@ -171,6 +172,7 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->early_leave_minutes->toBe(0);
 
     expect($records[$employees[2001]->id])
+        ->status->toBe('present')
         ->schedule_profile->toBe('security')
         ->shift->toBe('night')
         ->effective_punch_count->toBe(2)
@@ -180,7 +182,10 @@ test('admin imports attendance with employee matching and schedule comparison', 
         ->second_in->toBeNull()
         ->second_out->toBe('07:05:00')
         ->last_out_day_offset->toBe(1)
-        ->worked_hours->toBe('7.0')
+        ->worked_hours->toBe('8.0')
+        ->late_minutes->toBe(0)
+        ->late_penalty_hours->toBeNull()
+        ->early_leave_minutes->toBe(0)
         ->requires_review->toBeFalse();
 
     expect($records[$employees[3001]->id])
@@ -493,14 +498,14 @@ test('attendance import marks an early break out as late for day and night shift
         'nama' => 'Early Day Break Employee',
         'department_id' => $production->id,
         'jabatan_id' => $generalWorker->id,
-        'metode_penggajian' => 'Per Jam',
+        'metode_penggajian' => PayrollMethod::Hourly->value,
     ]);
     $nightEmployee = Karyawan::factory()->create([
         'nip' => 6023,
         'nama' => 'Early Night Break Employee',
         'department_id' => $production->id,
         'jabatan_id' => $generalWorker->id,
-        'metode_penggajian' => 'Per Jam',
+        'metode_penggajian' => PayrollMethod::Hourly->value,
     ]);
     $file = UploadedFile::fake()->createWithContent(
         'early-break.xlsx',
@@ -589,13 +594,13 @@ test('attendance import deducts regular work hours by full late hours', function
     expect($records[$fourMinuteEmployee->id])
         ->late_minutes->toBe(4)
         ->late_penalty_hours->toBe(1)
-        ->worked_hours->toBe('6.5')
+        ->worked_hours->toBe('7.0')
         ->status->toBe('late');
 
     expect($records[$oneHourEmployee->id])
         ->late_minutes->toBe(64)
         ->late_penalty_hours->toBe(2)
-        ->worked_hours->toBe('4.5')
+        ->worked_hours->toBe('6.0')
         ->status->toBe('late');
 });
 
@@ -634,7 +639,7 @@ test('attendance import uses the configured attendance tolerance', function () {
         ->status->toBe('late')
         ->late_minutes->toBe(3)
         ->late_penalty_hours->toBe(1)
-        ->worked_hours->toBe('6.5');
+        ->worked_hours->toBe('7.0');
 });
 
 test('attendance import deducts holiday work hours by late penalty hours', function () {
@@ -669,7 +674,7 @@ test('attendance import deducts holiday work hours by late penalty hours', funct
     expect($record)
         ->is_holiday_pay->toBeTrue()
         ->worked_hours->toBe('0.0')
-        ->holiday_worked_hours->toBe('13.0')
+        ->holiday_worked_hours->toBe('14.0')
         ->late_penalty_hours->toBe(1)
         ->status->toBe('late');
 });
@@ -707,7 +712,7 @@ test('attendance import applies second in return time and tolerance', function (
         ->status->toBe('late')
         ->late_minutes->toBe(4)
         ->late_penalty_hours->toBe(1)
-        ->worked_hours->toBe('6.5')
+        ->worked_hours->toBe('7.0')
         ->comparison_notes->toContain('Terlambat masuk istirahat 4 menit.');
 });
 
@@ -835,7 +840,7 @@ test('attendance import infers next day on night shift punches without plus suff
         ->second_in_day_offset->toBe(1)
         ->second_out->toBe('06:33:00')
         ->second_out_day_offset->toBe(1)
-        ->worked_hours->toBe('7.5')
+        ->worked_hours->toBe('8.0')
         ->overtime_hours->toBe('1.5')
         ->requires_review->toBeFalse();
 
@@ -844,6 +849,43 @@ test('attendance import infers next day on night shift punches without plus suff
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->where('records.data.0.first_out_day_offset', 1));
+});
+
+test('attendance import does not count saturday overtime under thirty minutes after midnight', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $production = Department::factory()->create(['name' => 'Production']);
+    $generalWorker = Jabatan::factory()->create(['name' => 'General Worker']);
+    $employee = Karyawan::factory()->create([
+        'nip' => 6028,
+        'nama' => 'Saturday Short Overtime Employee',
+        'department_id' => $production->id,
+        'jabatan_id' => $generalWorker->id,
+    ]);
+    $file = UploadedFile::fake()->createWithContent(
+        'saturday-short-overtime.xlsx',
+        attendanceImportWorkbook([
+            ['User ID', 'Name', 'Department', '21'],
+            [$employee->nip, 'Saturday Short Overtime Employee', 'Production', '4:33 PM'],
+            [null, null, null, '8:36 PM'],
+            [null, null, null, '9:10 PM'],
+            [null, null, null, '12:12 AM+'],
+        ], '2026-11-21'),
+    );
+
+    $this->actingAs($admin)
+        ->post(route('admin.attendance.import'), [
+            'attendance_file' => $file,
+        ])
+        ->assertRedirect();
+
+    $record = AttendanceRecord::query()->where('karyawan_id', $employee->id)->firstOrFail();
+
+    expect($record)
+        ->shift->toBe('night')
+        ->expected_check_in->toBe('17:00:00')
+        ->expected_check_out->toBe('00:00:00')
+        ->worked_hours->toBe('6.0')
+        ->overtime_hours->toBe('0.0');
 });
 
 test('attendance import caps saturday security regular work at six hours', function () {
@@ -878,7 +920,7 @@ test('attendance import caps saturday security regular work at six hours', funct
         ->shift->toBe('night')
         ->expected_check_out->toBe('00:00:00')
         ->worked_hours->toBe('6.0')
-        ->overtime_hours->toBe('1.0')
+        ->overtime_hours->toBe('2.0')
         ->has_missing_punch->toBeFalse();
 });
 

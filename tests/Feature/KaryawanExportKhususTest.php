@@ -15,7 +15,7 @@ test('admin can download the special employee export', function () {
         'no_identitas' => '3273010101010001',
         'tempat_lahir' => 'Jakarta',
         'alamat_identitas' => 'Jl. Identitas',
-        'alamat_tinggal' => 'Jl. Tinggal',
+        'alamat_tinggal_sekarang' => 'Jl. Tinggal',
         'email' => 'active.export@example.com',
         'hp' => '081234567890',
         'nomor_rekening' => '001234567890',

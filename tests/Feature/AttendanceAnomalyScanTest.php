@@ -292,6 +292,33 @@ test('scan respects a first out after midnight on a night shift', function () {
         ->not->toContain('SECOND_OUT_FAR_AFTER_CHECKOUT');
 });
 
+test('scan treats an early security checkout as normal', function () {
+    $admin = User::factory()->create(['role' => 5]);
+    $department = Department::factory()->create(['name' => 'Security']);
+    $jabatan = Jabatan::factory()->create(['name' => 'Security']);
+    $employee = Karyawan::factory()->create([
+        'department_id' => $department->id,
+        'jabatan_id' => $jabatan->id,
+    ]);
+    attendanceScanRecord($employee, '2026-11-20', 8, [
+        'schedule_profile' => 'security',
+        'expected_check_out' => '20:00:00',
+        'first_out' => null,
+        'second_in' => null,
+        'second_out' => '15:00:00',
+        'raw_punch_count' => 2,
+        'effective_punch_count' => 2,
+    ]);
+
+    $this->actingAs($admin)
+        ->getJson(route('admin.attendance.anomalies', [
+            'start_date' => '2026-11-20',
+            'end_date' => '2026-11-20',
+        ]))
+        ->assertOk()
+        ->assertJsonCount(0, 'results');
+});
+
 test('scan flags second out more than four hours after checkout', function () {
     $admin = User::factory()->create(['role' => 5]);
     $department = Department::factory()->create(['name' => 'Production']);

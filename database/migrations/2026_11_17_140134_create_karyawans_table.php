@@ -26,7 +26,7 @@ return new class extends Migration
             $table->string('jenis_identitas')->nullable();
             $table->text('no_identitas')->nullable();
             $table->string('alamat_identitas')->nullable();
-            $table->string('alamat_tinggal')->nullable();
+            $table->string('alamat_tinggal_sekarang')->nullable();
             $table->string('status_karyawan')->index();
             $table->date('tanggal_bergabung')->nullable();
             $table->date('tanggal_resigned')->nullable();
@@ -63,12 +63,12 @@ return new class extends Migration
             $table->boolean('potongan_kesehatan')->default(false);
             $table->text('no_npwp')->nullable();
             $table->string('ptkp')->nullable();
-            $table->string('kontak_darurat')->nullable();
-            $table->string('kontak_darurat2')->nullable();
-            $table->string('hp1')->nullable();
-            $table->string('hp2')->nullable();
-            $table->string('hubungan1')->nullable();
-            $table->string('hubungan2')->nullable();
+            $table->string('nama_contact_darurat')->nullable();
+            $table->string('nama_contact_darurat_2')->nullable();
+            $table->string('contact_darurat_1')->nullable();
+            $table->string('contact_darurat_2')->nullable();
+            $table->string('hubungan_1')->nullable();
+            $table->string('hubungan_2')->nullable();
             $table->unsignedInteger('tanggungan')->nullable();
             $table->string('id_file_karyawan')->nullable();
             $table->date('tanggal_update')->nullable()->index();

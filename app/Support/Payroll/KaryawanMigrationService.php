@@ -4,6 +4,7 @@ namespace App\Support\Payroll;
 
 use App\Enums\KaryawanStatus;
 use App\Enums\OutsourceType;
+use App\Enums\PayrollMethod;
 use App\Models\User;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
@@ -105,6 +106,59 @@ class KaryawanMigrationService
             'status' => 'renamed',
             'note' => 'Nilai etnis dipetakan ke tabel etnis. Nilai China dinormalisasi menjadi TKA.',
         ],
+        'metode_penggajian' => [
+            'target' => 'metode_penggajian',
+            'status' => 'transformed',
+            'note' => 'Nilai Perjam dinormalisasi menjadi hourly dan Perbulan menjadi monthly.',
+        ],
+        'alamat_tinggal' => [
+            'target' => 'alamat_tinggal_sekarang',
+            'status' => 'renamed',
+            'note' => 'Field alamat tinggal lama dipetakan ke alamat_tinggal_sekarang.',
+        ],
+        'kontak_darurat' => [
+            'target' => 'nama_contact_darurat',
+            'status' => 'renamed',
+            'note' => 'Field kontak darurat lama dipetakan ke nama_contact_darurat.',
+        ],
+        'kontak_darurat2' => [
+            'target' => 'nama_contact_darurat_2',
+            'status' => 'renamed',
+            'note' => 'Field kontak darurat kedua lama dipetakan ke nama_contact_darurat_2.',
+        ],
+        'hp1' => [
+            'target' => 'contact_darurat_1',
+            'status' => 'renamed',
+            'note' => 'Field HP pertama lama dipetakan ke contact_darurat_1.',
+        ],
+        'hp2' => [
+            'target' => 'contact_darurat_2',
+            'status' => 'renamed',
+            'note' => 'Field HP kedua lama dipetakan ke contact_darurat_2.',
+        ],
+        'hubungan1' => [
+            'target' => 'hubungan_1',
+            'status' => 'renamed',
+            'note' => 'Field hubungan pertama lama dipetakan ke hubungan_1.',
+        ],
+        'hubungan2' => [
+            'target' => 'hubungan_2',
+            'status' => 'renamed',
+            'note' => 'Field hubungan kedua lama dipetakan ke hubungan_2.',
+        ],
+    ];
+
+    /**
+     * @var array<string, string>
+     */
+    private const LegacyTargetFieldAliases = [
+        'alamat_tinggal_sekarang' => 'alamat_tinggal',
+        'nama_contact_darurat' => 'kontak_darurat',
+        'nama_contact_darurat_2' => 'kontak_darurat2',
+        'contact_darurat_1' => 'hp1',
+        'contact_darurat_2' => 'hp2',
+        'hubungan_1' => 'hubungan1',
+        'hubungan_2' => 'hubungan2',
     ];
 
     /**
@@ -124,7 +178,7 @@ class KaryawanMigrationService
         'jenis_identitas',
         'no_identitas',
         'alamat_identitas',
-        'alamat_tinggal',
+        'alamat_tinggal_sekarang',
         'status_karyawan',
         'tanggal_bergabung',
         'tanggal_resigned',
@@ -152,12 +206,12 @@ class KaryawanMigrationService
         'gaji_bpjs',
         'no_npwp',
         'ptkp',
-        'kontak_darurat',
-        'kontak_darurat2',
-        'hp1',
-        'hp2',
-        'hubungan1',
-        'hubungan2',
+        'nama_contact_darurat',
+        'nama_contact_darurat_2',
+        'contact_darurat_1',
+        'contact_darurat_2',
+        'hubungan_1',
+        'hubungan_2',
         'tanggungan',
         'tanggal_update',
         'pendidikan',
@@ -476,11 +530,13 @@ class KaryawanMigrationService
         $row = [];
 
         foreach (self::DirectTargetFields as $field) {
-            $row[$field] = $sourceRow[$field] ?? null;
+            $legacyField = self::LegacyTargetFieldAliases[$field] ?? null;
+            $row[$field] = $sourceRow[$legacyField ?? $field] ?? $sourceRow[$field] ?? null;
         }
 
         $row['nip'] = $this->integerOrNull($sourceRow[self::LegacySourceNipField] ?? null);
         $row['status_karyawan'] = $row['status_karyawan'] ?: KaryawanStatus::Pkwt->value;
+        $row['metode_penggajian'] = PayrollMethod::fromLegacy($row['metode_penggajian'])?->value;
         $row['company_id'] = $this->mappedReference($referenceMaps['company'] ?? [], $sourceRow['company_id'] ?? null);
         $row['directorate_id'] = $this->mappedReference($referenceMaps['directorate'] ?? [], $sourceRow['placement_id'] ?? null);
         $row['department_id'] = $this->mappedReference($referenceMaps['department'] ?? [], $sourceRow['department_id'] ?? null);

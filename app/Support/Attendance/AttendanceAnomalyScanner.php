@@ -474,7 +474,7 @@ class AttendanceAnomalyScanner
             $checkoutTolerance = (int) config('attendance.anomaly_scan.checkout_proximity_minutes', 30);
             $maximumCheckoutDelay = (int) round($options['overtime_threshold_hours'] * 60);
 
-            if ($checkoutDifference < -$checkoutTolerance) {
+            if ($schedule->profile !== 'security' && $checkoutDifference < -$checkoutTolerance) {
                 $push(
                     'SECOND_OUT_FAR_FROM_CHECKOUT',
                     'work_hours',

@@ -184,7 +184,7 @@ class KaryawanExcelExporter
             $karyawan->nama_kampus,
             $karyawan->tanggal_bergabung?->format('Y-m-d'),
             $karyawan->status_karyawan?->displayLabel(),
-            $karyawan->metode_penggajian,
+            $karyawan->metode_penggajian?->label(),
             $karyawan->no_npwp,
             $karyawan->ptkp,
             $karyawan->gaji_pokok,

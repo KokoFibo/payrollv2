@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Enums\KaryawanStatus;
+use App\Enums\PayrollMethod;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\SaveKaryawanRequest;
 use App\Models\Company;
@@ -81,14 +82,15 @@ class EmployeeController extends Controller
                     'status_label' => $karyawan->status_karyawan?->displayLabel(),
                     'status_active' => $karyawan->status_karyawan?->usesActiveDot() ?? false,
                     'lama_bekerja' => $karyawan->lamaBekerja(),
-                    'metode_penggajian' => $karyawan->metode_penggajian,
-                    'salary_masked' => $maskSalary,
+                    'metode_penggajian' => $karyawan->metode_penggajian?->value,
+                    'metode_penggajian_label' => $karyawan->metode_penggajian?->label(),
+                    'salary_restricted' => $maskSalary,
                     'gaji_pokok' => $maskSalary ? null : $karyawan->gaji_pokok,
-                    'gaji_bpjs' => $maskSalary ? null : $karyawan->gaji_bpjs,
-                    'gaji_overtime' => $maskSalary ? null : $karyawan->gaji_overtime,
+                    'gaji_bpjs' => $karyawan->gaji_bpjs,
+                    'gaji_overtime' => $karyawan->gaji_overtime,
                     'tanggal_update' => $karyawan->tanggal_update?->format('Y-m-d'),
-                    'iuran_air' => $maskSalary ? null : $karyawan->iuran_air,
-                    'iuran_locker' => $maskSalary ? null : $karyawan->iuran_locker,
+                    'iuran_air' => $karyawan->iuran_air,
+                    'iuran_locker' => $karyawan->iuran_locker,
                 ];
             });
 
@@ -158,7 +160,7 @@ class EmployeeController extends Controller
 
         return Inertia::render('Employees/Form', [
             'employee' => null,
-            'salaryLocked' => false,
+            'salaryRestricted' => false,
             'options' => $this->formOptions(),
         ]);
     }
@@ -184,8 +186,10 @@ class EmployeeController extends Controller
     public function edit(Request $request, Karyawan $karyawan): Response
     {
         Gate::authorize('update', $karyawan);
-        $salaryLocked = $this->salaryVisibility->shouldMaskSalary($karyawan, $request->user());
+        $salaryRestricted = $this->salaryVisibility->shouldMaskSalary($karyawan, $request->user());
         $employee = [
+            'id' => $karyawan->id,
+            'uuid' => $karyawan->uuid,
             ...$karyawan->only($karyawan->getFillable()),
             'tanggal_lahir' => $karyawan->tanggal_lahir?->toDateString(),
             'tanggal_bergabung' => $karyawan->tanggal_bergabung?->toDateString(),
@@ -193,17 +197,18 @@ class EmployeeController extends Controller
             'tanggal_blacklist' => $karyawan->tanggal_blacklist?->toDateString(),
             'status_karyawan' => $karyawan->status_karyawan?->value,
             'outsource' => $karyawan->outsource?->value,
+            'metode_penggajian' => $karyawan->metode_penggajian?->value,
         ];
 
-        if ($salaryLocked) {
-            foreach (AdminSalaryVisibility::PAYROLL_FIELDS as $field) {
+        if ($salaryRestricted) {
+            foreach (AdminSalaryVisibility::RESTRICTED_PAYROLL_FIELDS as $field) {
                 $employee[$field] = null;
             }
         }
 
         return Inertia::render('Employees/Form', [
             'employee' => $employee,
-            'salaryLocked' => $salaryLocked,
+            'salaryRestricted' => $salaryRestricted,
             'options' => $this->formOptions(),
         ]);
     }
@@ -215,7 +220,7 @@ class EmployeeController extends Controller
         if ($this->salaryVisibility->shouldMaskSalary($karyawan, $request->user())) {
             $attributes = [
                 ...$attributes,
-                ...$karyawan->only(AdminSalaryVisibility::PAYROLL_FIELDS),
+                ...$karyawan->only(AdminSalaryVisibility::RESTRICTED_PAYROLL_FIELDS),
             ];
         }
 
@@ -426,12 +431,13 @@ class EmployeeController extends Controller
                 ])
                 ->all(),
             'genders' => $this->simpleOptions(['Laki-laki', 'Perempuan']),
-            'maritalStatuses' => $this->simpleOptions(['Belum Menikah', 'Menikah', 'Cerai Hidup', 'Cerai Mati']),
+            'maritalStatuses' => $this->simpleOptions(KaryawanOptions::MARITAL_STATUSES),
             'bloodTypes' => $this->simpleOptions(['A', 'B', 'AB', 'O']),
             'identityTypes' => $this->simpleOptions(['KTP', 'SIM', 'Paspor']),
             'religions' => $this->simpleOptions(KaryawanOptions::AGAMA),
             'educations' => $this->simpleOptions(KaryawanOptions::PENDIDIKAN),
             'banks' => $this->simpleOptions(KaryawanOptions::BANKS),
+            'payrollMethods' => PayrollMethod::options(),
             'ptkp' => KaryawanOptions::options(KaryawanOptions::PTKP),
         ];
     }
@@ -505,9 +511,9 @@ class EmployeeController extends Controller
         foreach ([
             'email', 'hp', 'telepon', 'status_pernikahan', 'golongan_darah',
             'agama', 'jenis_identitas', 'no_identitas', 'alamat_identitas',
-            'alamat_tinggal', 'nama_bank', 'nomor_rekening', 'no_npwp', 'ptkp',
-            'kontak_darurat', 'kontak_darurat2', 'hp1', 'hp2', 'hubungan1',
-            'hubungan2', 'jurusan', 'nama_kampus',
+            'alamat_tinggal_sekarang', 'nama_bank', 'nomor_rekening', 'no_npwp', 'ptkp',
+            'nama_contact_darurat', 'nama_contact_darurat_2', 'contact_darurat_1',
+            'contact_darurat_2', 'hubungan_1', 'hubungan_2', 'jurusan', 'nama_kampus',
         ] as $field) {
             if (isset($attributes[$field]) && trim((string) $attributes[$field]) === '') {
                 $attributes[$field] = null;

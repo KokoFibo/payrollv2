@@ -11,31 +11,9 @@ class AdminSalaryVisibility
 {
     public const CACHE_KEY = 'admin_salary_visibility_limit';
 
-    public const PAYROLL_FIELDS = [
-        'metode_penggajian',
+    public const RESTRICTED_PAYROLL_FIELDS = [
         'gaji_pokok',
         'gaji_tetap',
-        'gaji_overtime',
-        'gaji_shift_malam_satpam',
-        'bonus',
-        'tunjangan_jabatan',
-        'tunjangan_bahasa',
-        'tunjangan_skill',
-        'tunjangan_lembur_sabtu',
-        'tunjangan_lama_kerja',
-        'tunjangan_housing',
-        'iuran_air',
-        'denda',
-        'iuran_locker',
-        'gaji_bpjs',
-        'potongan_jht',
-        'potongan_jp',
-        'potongan_jkk',
-        'potongan_jkm',
-        'potongan_kesehatan',
-        'no_npwp',
-        'ptkp',
-        'tanggungan',
     ];
 
     public function limit(): int
