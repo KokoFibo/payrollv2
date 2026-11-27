@@ -49,7 +49,8 @@ test('privileged user can create update and delete an internal user', function (
     $user = User::query()->where('email', 'internal@example.com')->firstOrFail();
 
     expect($user->role)->toBe(5)
-        ->and($user->email_verified_at)->not->toBeNull();
+        ->and($user->email_verified_at)->not->toBeNull()
+        ->and($user->must_change_password)->toBeTrue();
 
     $this->actingAs($developer)
         ->put(route('admin.users.update', $user), [

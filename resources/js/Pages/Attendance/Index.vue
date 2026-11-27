@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Head, router, useForm } from "@inertiajs/vue3";
 import { useConfirm } from "primevue/useconfirm";
+import { useToast } from "primevue/usetoast";
 import Paginator from "primevue/paginator";
 import AdminLayout from "@/Layouts/AdminLayout.vue";
 import PageHeader from "@/Components/Admin/PageHeader.vue";
@@ -23,6 +24,7 @@ const props = defineProps({
 });
 
 const confirm = useConfirm();
+const toast = useToast();
 const loading = ref(false);
 const dialogVisible = ref(false);
 const editingRecord = ref(null);
@@ -58,7 +60,12 @@ const activeFilterCount = computed(() => [
 ].filter(Boolean).length);
 const importSections = [
     { label: "Rekap Absensi", value: "rekap", icon: "pi pi-upload" },
+    { label: "Database Source", value: "database", icon: "pi pi-database" },
     { label: "Riwayat Import", value: "riwayat", icon: "pi pi-history" },
+];
+const databaseImportModes = [
+    { label: "Harian", value: "date" },
+    { label: "Satu Bulan", value: "month" },
 ];
 const guideSections = [
     { label: "Jadwal Reguler", value: "reguler", icon: "pi pi-table" },
@@ -99,6 +106,37 @@ const form = useForm({
 const uploadForm = useForm({
     attendance_file: null,
 });
+const databaseImportForm = useForm({
+    attendance_mode: "date",
+    attendance_date: props.filters.date,
+    attendance_month: props.filters.date.slice(0, 7),
+});
+const databasePreviewFilters = reactive({
+    attendance_mode: "date",
+    attendance_date: props.filters.date,
+    attendance_month: props.filters.date.slice(0, 7),
+    page: 1,
+    per_page: 15,
+});
+const databasePreview = ref(null);
+const databasePreviewedMode = ref("date");
+const databasePreviewedPeriod = ref("");
+const databasePreviewLoading = ref(false);
+const databasePreviewError = ref("");
+const databaseImportRunning = ref(false);
+const databaseImportResult = ref(null);
+const databaseImportProgress = reactive({
+    current: 0,
+    total: 0,
+    date: "",
+    processed: 0,
+    review: 0,
+});
+const databasePeriodValue = computed(() => (
+    databasePreviewFilters.attendance_mode === "month"
+        ? databasePreviewFilters.attendance_month
+        : databasePreviewFilters.attendance_date
+));
 
 const anomalyScanForm = reactive({
     scope: "active",
@@ -432,8 +470,198 @@ function uploadAttendance() {
         onSuccess: () => {
             uploadForm.reset();
             fileInputKey.value++;
+            importDialogVisible.value = false;
         },
     });
+}
+
+async function loadDatabasePreview(resetPage = false) {
+    if (resetPage) {
+        databasePreviewFilters.page = 1;
+        databaseImportResult.value = null;
+    }
+
+    databasePreviewLoading.value = true;
+    databasePreviewError.value = "";
+
+    try {
+        const response = await fetch(route("admin.attendance.database-import.preview", {
+            attendance_mode: databasePreviewFilters.attendance_mode,
+            attendance_date: databasePreviewFilters.attendance_mode === "date"
+                ? databasePreviewFilters.attendance_date
+                : undefined,
+            attendance_month: databasePreviewFilters.attendance_mode === "month"
+                ? databasePreviewFilters.attendance_month
+                : undefined,
+            page: databasePreviewFilters.page,
+            per_page: databasePreviewFilters.per_page,
+        }), {
+            headers: {
+                Accept: "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        });
+        const payload = await response.json();
+
+        if (!response.ok) {
+            databasePreview.value = null;
+            databasePreviewedPeriod.value = "";
+            databasePreviewError.value = payload.errors
+                ? Object.values(payload.errors).flat()[0]
+                : payload.message || "Data source tidak dapat dimuat.";
+
+            return;
+        }
+
+        databasePreview.value = payload;
+        databasePreviewedMode.value = databasePreviewFilters.attendance_mode;
+        databasePreviewedPeriod.value = databasePeriodValue.value;
+        databasePreviewFilters.page = payload.pagination.current_page;
+        databasePreviewFilters.per_page = payload.pagination.per_page;
+    } catch {
+        databasePreview.value = null;
+        databasePreviewedPeriod.value = "";
+        databasePreviewError.value = "Database source tidak dapat dihubungi. Periksa konfigurasi koneksi.";
+    } finally {
+        databasePreviewLoading.value = false;
+    }
+}
+
+function onDatabasePreviewPage(event) {
+    databasePreviewFilters.page = event.page + 1;
+    databasePreviewFilters.per_page = event.rows;
+    loadDatabasePreview();
+}
+
+async function runDatabaseMonthImport(dates) {
+    databaseImportRunning.value = true;
+    databaseImportResult.value = null;
+    databasePreviewError.value = "";
+    Object.assign(databaseImportProgress, {
+        current: 0,
+        total: dates.length,
+        date: "",
+        processed: 0,
+        review: 0,
+    });
+
+    try {
+        for (const [index, item] of dates.entries()) {
+            databaseImportProgress.date = item.attendance_date;
+            const response = await fetch(route("admin.attendance.database-import.store-day"), {
+                method: "POST",
+                headers: {
+                    Accept: "application/json",
+                    "Content-Type": "application/json",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "X-XSRF-TOKEN": decodeURIComponent(
+                        document.cookie
+                            .split("; ")
+                            .find((cookie) => cookie.startsWith("XSRF-TOKEN="))
+                            ?.split("=")
+                            .slice(1)
+                            .join("=") ?? "",
+                    ),
+                },
+                body: JSON.stringify({
+                    attendance_mode: "date",
+                    attendance_date: item.attendance_date,
+                }),
+            });
+            const payload = await response.json();
+
+            if (!response.ok) {
+                throw new Error(firstError(payload));
+            }
+
+            databaseImportProgress.current = index + 1;
+            databaseImportProgress.processed += payload.processed_employee_count;
+            databaseImportProgress.review += payload.review_required_count;
+        }
+
+        databaseImportResult.value = {
+            dates: dates.length,
+            processed: databaseImportProgress.processed,
+            review: databaseImportProgress.review,
+        };
+        toast.add({
+            severity: databaseImportProgress.review > 0 ? "warn" : "success",
+            summary: "Import satu bulan selesai",
+            detail: `${databaseImportProgress.processed.toLocaleString("id-ID")} attendance diproses, `
+                + `${databaseImportProgress.review.toLocaleString("id-ID")} perlu review.`,
+            life: 6000,
+        });
+        router.reload({ only: ["recentImports", "stats"] });
+    } catch (error) {
+        databasePreviewError.value = error instanceof Error
+            ? error.message
+            : "Import bulanan gagal diproses.";
+    } finally {
+        databaseImportRunning.value = false;
+    }
+}
+
+function importDatabaseAttendance() {
+    const summary = databasePreview.value?.summary;
+    const periodLabel = databasePreviewedMode.value === "month"
+        ? formatMonth(databasePreviewedPeriod.value)
+        : formatDate(databasePreviewedPeriod.value);
+
+    confirm.require({
+        message: `Import ${summary?.matched ?? 0} attendance periode ${periodLabel}? `
+            + `${summary?.existing ?? 0} record yang sudah ada akan diperbarui.`,
+        header: "Import attendance dari database?",
+        icon: "pi pi-database",
+        rejectLabel: "Batal",
+        acceptLabel: "Ya, import",
+        rejectClass: "p-button-secondary p-button-outlined",
+        acceptClass: "p-button-success",
+        accept: () => {
+            if (databasePreviewedMode.value === "month") {
+                runDatabaseMonthImport(databasePreview.value?.dates ?? []);
+
+                return;
+            }
+
+            databaseImportForm.attendance_mode = databasePreviewedMode.value;
+            databaseImportForm.attendance_date = databasePreviewedMode.value === "date"
+                ? databasePreviewedPeriod.value
+                : "";
+            databaseImportForm.attendance_month = databasePreviewedMode.value === "month"
+                ? databasePreviewedPeriod.value
+                : "";
+            databaseImportForm.post(route("admin.attendance.database-import.store"), {
+                preserveScroll: true,
+                onSuccess: () => {
+                    importDialogVisible.value = false;
+                    databasePreview.value = null;
+                    databasePreviewedPeriod.value = "";
+                },
+            });
+        },
+    });
+}
+
+function databasePunchSummary(row) {
+    return [
+        ["IN", row.first_in],
+        ["OUT", row.first_out],
+        ["IN 2", row.second_in],
+        ["OUT 2", row.second_out],
+        ["OT IN", row.overtime_in],
+        ["OT OUT", row.overtime_out],
+    ]
+        .filter(([, value]) => value)
+        .map(([label, value]) => `${label} ${value}`)
+        .join(" · ") || "-";
+}
+
+function databaseTargetSeverity(state) {
+    return state === "update" ? "warn" : "success";
+}
+
+function databaseTargetLabel(state) {
+    return state === "update" ? "Perbarui" : "Baru";
 }
 
 function downloadScheduleGuide() {
@@ -666,6 +894,16 @@ function formatDate(value) {
     return `${day}/${month}/${year}`;
 }
 
+function formatMonth(value) {
+    if (!value) {
+        return "-";
+    }
+
+    const [year, month] = value.split("-");
+
+    return `${month}/${year}`;
+}
+
 function formatDateTime(value) {
     if (!value) {
         return "-";
@@ -710,7 +948,7 @@ function statusSeverity(status) {
                         <Button label="Scan Anomali" icon="pi pi-search" severity="warn" outlined class="w-full sm:w-auto" @click="openAnomalyScan" />
                         <Button label="Hapus Harian" icon="pi pi-trash" severity="danger" outlined class="w-full sm:w-auto" @click="deleteAttendanceDay" />
                         <Button label="Tambah Absensi" icon="pi pi-plus" severity="secondary" outlined class="w-full sm:w-auto" @click="openCreate" />
-                        <Button label="Import Excel" icon="pi pi-file-excel" severity="danger" class="col-span-2 w-full sm:col-span-1 sm:w-auto" @click="openImportDialog()" />
+                        <Button label="Import Attendance" icon="pi pi-download" severity="danger" class="col-span-2 w-full sm:col-span-1 sm:w-auto" @click="openImportDialog()" />
                     </div>
                 </template>
             </PageHeader>
@@ -965,6 +1203,9 @@ function statusSeverity(status) {
                                         <div class="rounded-xl bg-slate-50 px-2 py-2 dark:bg-slate-950/40">
                                             <p class="text-[10px] font-medium text-slate-400">Lembur</p>
                                             <p class="mt-1 text-sm font-bold text-slate-900 dark:text-white">{{ record.overtime_hours }}</p>
+                                            <p v-if="record.night_shift_allowance" class="mt-0.5 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300">
+                                                +{{ record.night_shift_allowance }} jam malam
+                                            </p>
                                         </div>
                                         <div class="rounded-xl bg-slate-50 px-2 py-2 dark:bg-slate-950/40">
                                             <p class="text-[10px] font-medium text-slate-400">Selisih</p>
@@ -1160,7 +1401,7 @@ function statusSeverity(status) {
                                     {{ data.expected_check_in || "-" }} → {{ data.expected_check_out || "-" }}
                                 </p>
                                 <p v-else class="mt-1 text-xs text-slate-400">Jadwal manual</p>
-                                <Tag v-if="data.is_holiday_pay" severity="danger" class="mt-2">
+                                <Tag v-if="data.is_holiday_pay" severity="danger" class="mt-2 !px-2 !py-0.5 !text-[10px]">
                                     Libur x2{{ data.calendar_override_name ? `: ${data.calendar_override_name}` : "" }}
                                 </Tag>
                                 <Tag v-else-if="data.calendar_override_id" severity="info" class="mt-2">
@@ -1245,6 +1486,14 @@ function statusSeverity(status) {
                         </Column>
                         <Column field="overtime_hours" header="Lembur" sortable style="min-width: 100px">
                             <template #body="{ data }">{{ data.overtime_hours }} jam</template>
+                        </Column>
+                        <Column field="night_shift_allowance" header="Shift Malam" sortable style="min-width: 115px">
+                            <template #body="{ data }">
+                                <span v-if="data.night_shift_allowance" class="font-semibold text-indigo-700 dark:text-indigo-300">
+                                    +{{ data.night_shift_allowance }} jam
+                                </span>
+                                <span v-else class="text-xs text-slate-400">â€”</span>
+                            </template>
                         </Column>
                         <Column field="holiday_worked_hours" header="Kerja Libur x2" sortable style="min-width: 125px">
                             <template #body="{ data }">{{ data.holiday_worked_hours }} jam</template>
@@ -1548,7 +1797,7 @@ function statusSeverity(status) {
 
         <Dialog
             v-model:visible="importDialogVisible"
-            header="Import Excel"
+            header="Import Attendance"
             modal
             :style="{ width: 'min(94vw, 980px)' }"
             :breakpoints="{ '960px': '94vw' }"
@@ -1609,6 +1858,214 @@ function statusSeverity(status) {
                     </div>
                 </template>
 
+                <template v-else-if="importSection === 'database'">
+                    <div class="space-y-4">
+                        <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+                            <div class="mb-4">
+                                <h3 class="text-sm font-semibold text-slate-900 dark:text-white">Import dari database source</h3>
+                                <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                                    Data diambil dari tabel <span class="font-mono">yfrekappresensis</span> pada database
+                                    yang dikonfigurasi. Jam kerja, hari kerja, lembur, kerja libur, overtime libur,
+                                    late, shift, dan punch disalin langsung tanpa dihitung ulang.
+                                    Pilih satu tanggal atau seluruh bulan. Review dihitung dari No Scan,
+                                    punch masuk/keluar yang kosong, dan total jam kerja negatif.
+                                </p>
+                            </div>
+                            <form class="flex flex-col gap-3 sm:flex-row sm:items-end" @submit.prevent="loadDatabasePreview(true)">
+                                <FormField label="Mode import" class="w-full sm:max-w-[230px]">
+                                    <SelectButton
+                                        v-model="databasePreviewFilters.attendance_mode"
+                                        :options="databaseImportModes"
+                                        option-label="label"
+                                        option-value="value"
+                                        :allow-empty="false"
+                                        class="w-full"
+                                    />
+                                </FormField>
+                                <FormField
+                                    v-if="databasePreviewFilters.attendance_mode === 'date'"
+                                    label="Tanggal attendance"
+                                    class="w-full sm:max-w-xs"
+                                    :error="databaseImportForm.errors.attendance_date"
+                                >
+                                    <InputText v-model="databasePreviewFilters.attendance_date" type="date" class="w-full" />
+                                </FormField>
+                                <FormField
+                                    v-else
+                                    label="Bulan attendance"
+                                    class="w-full sm:max-w-xs"
+                                    :error="databaseImportForm.errors.attendance_month"
+                                >
+                                    <InputText v-model="databasePreviewFilters.attendance_month" type="month" class="w-full" />
+                                </FormField>
+                                <Button
+                                    type="submit"
+                                    label="Preview data"
+                                    icon="pi pi-search"
+                                    class="w-full sm:w-auto"
+                                    :loading="databasePreviewLoading"
+                                    :disabled="databaseImportRunning"
+                                />
+                            </form>
+                        </div>
+
+                        <Message v-if="databasePreviewError" severity="error" :closable="false">
+                            {{ databasePreviewError }}
+                        </Message>
+
+                        <div v-if="databaseImportRunning" class="space-y-2 rounded-xl border border-sky-200 bg-sky-50/60 p-3 dark:border-sky-500/30 dark:bg-sky-500/10">
+                            <div class="flex items-center justify-between gap-3 text-xs text-sky-800 dark:text-sky-200">
+                                <span>Mengimpor {{ formatDate(databaseImportProgress.date) }}</span>
+                                <span>{{ databaseImportProgress.current }} / {{ databaseImportProgress.total }}</span>
+                            </div>
+                            <ProgressBar
+                                :value="databaseImportProgress.total
+                                    ? (databaseImportProgress.current / databaseImportProgress.total) * 100
+                                    : 0"
+                                :show-value="false"
+                                class="h-2"
+                            />
+                            <p class="text-xs text-sky-700 dark:text-sky-200">
+                                {{ databaseImportProgress.processed.toLocaleString("id-ID") }} attendance,
+                                {{ databaseImportProgress.review.toLocaleString("id-ID") }} perlu review.
+                            </p>
+                        </div>
+
+                        <Message v-if="databaseImportResult" severity="success" :closable="false">
+                            Import {{ databaseImportResult.dates }} hari selesai:
+                            {{ databaseImportResult.processed.toLocaleString("id-ID") }} attendance,
+                            {{ databaseImportResult.review.toLocaleString("id-ID") }} perlu review.
+                        </Message>
+
+                        <template v-if="databasePreview">
+                            <div class="rounded-xl border border-sky-200 bg-sky-50/60 p-3 text-xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+                                Source: <span class="font-mono">{{ databasePreview.source.database }}.{{ databasePreview.source.table }}</span>
+                                · Periode {{ databasePreview.period.label }}
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7">
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">Record source</p>
+                                    <p class="mt-1 text-xl font-bold text-slate-900 dark:text-white">{{ databasePreview.summary.total.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">NIP cocok</p>
+                                    <p class="mt-1 text-xl font-bold text-emerald-700 dark:text-emerald-300">{{ databasePreview.summary.matched.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">NIP tidak cocok</p>
+                                    <p class="mt-1 text-xl font-bold text-red-700 dark:text-red-300">{{ databasePreview.summary.unmatched.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">Record baru</p>
+                                    <p class="mt-1 text-xl font-bold text-sky-700 dark:text-sky-300">{{ databasePreview.summary.create.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">Diperbarui</p>
+                                    <p class="mt-1 text-xl font-bold text-amber-700 dark:text-amber-300">{{ databasePreview.summary.existing.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                                    <p class="text-xs text-slate-500">No Scan</p>
+                                    <p class="mt-1 text-xl font-bold text-red-700 dark:text-red-300">{{ databasePreview.summary.no_scan.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div class="rounded-xl border border-red-200 bg-red-50/60 p-3 dark:border-red-500/30 dark:bg-red-500/10">
+                                    <p class="text-xs text-red-700 dark:text-red-200">Perlu review</p>
+                                    <p class="mt-1 text-xl font-bold text-red-700 dark:text-red-200">{{ databasePreview.summary.review_required.toLocaleString("id-ID") }}</p>
+                                </div>
+                            </div>
+
+                            <Message v-if="databasePreview.summary.unmatched" severity="warn" :closable="false">
+                                {{ databasePreview.summary.unmatched }} record source tidak memiliki NIP yang cocok dan akan dilewati.
+                            </Message>
+
+                            <DataTable
+                                :value="databasePreview.data"
+                                :loading="databasePreviewLoading"
+                                data-key="source_id"
+                                paginator
+                                lazy
+                                :first="(databasePreview.pagination.current_page - 1) * databasePreview.pagination.per_page"
+                                :rows="databasePreview.pagination.per_page"
+                                :rows-per-page-options="[15, 30, 50, 100]"
+                                :total-records="databasePreview.pagination.total"
+                                scrollable
+                                scroll-height="480px"
+                                @page="onDatabasePreviewPage"
+                            >
+                                <template #empty>
+                                    <EmptyState title="Tidak ada data" description="Tidak ada attendance pada periode tersebut di database source." icon="pi pi-database" />
+                                </template>
+                                <Column header="Karyawan" style="min-width: 210px">
+                                    <template #body="{ data }">
+                                        <p class="font-semibold text-slate-900 dark:text-white">{{ data.name }}</p>
+                                        <p class="mt-1 font-mono text-xs text-slate-500">{{ data.nip }}</p>
+                                    </template>
+                                </Column>
+                                <Column header="Tanggal" style="min-width: 105px">
+                                    <template #body="{ data }">{{ formatDate(data.attendance_date) }}</template>
+                                </Column>
+                                <Column header="Shift source" style="min-width: 105px">
+                                    <template #body="{ data }">{{ data.source_shift || "-" }}</template>
+                                </Column>
+                                <Column header="Punch source" style="min-width: 330px">
+                                    <template #body="{ data }">
+                                        <p class="font-mono text-xs text-slate-700 dark:text-slate-200">{{ databasePunchSummary(data) }}</p>
+                                    </template>
+                                </Column>
+                                <Column header="Total source" style="min-width: 150px">
+                                    <template #body="{ data }">
+                                        <p class="text-xs text-slate-600 dark:text-slate-300">
+                                            Kerja {{ data.source_worked_hours ?? "-" }} jam
+                                        </p>
+                                        <p class="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                                            Lembur {{ data.source_overtime_hours ?? "-" }} jam
+                                        </p>
+                                    </template>
+                                </Column>
+                                <Column header="Flag source" style="min-width: 135px">
+                                    <template #body="{ data }">
+                                        <div class="flex flex-wrap gap-1">
+                                            <Tag v-if="data.source_no_scan" severity="danger">No Scan</Tag>
+                                            <Tag v-else-if="data.source_late" severity="warn">Terlambat</Tag>
+                                            <Tag v-else severity="success">Normal</Tag>
+                                        </div>
+                                    </template>
+                                </Column>
+                                <Column header="Target" style="min-width: 90px">
+                                    <template #body="{ data }">
+                                        <Tag :severity="databaseTargetSeverity(data.target_state)">
+                                            {{ databaseTargetLabel(data.target_state) }}
+                                        </Tag>
+                                    </template>
+                                </Column>
+                            </DataTable>
+
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <p class="text-xs text-slate-500 dark:text-slate-400">
+                                    Halaman {{ databasePreview.pagination.current_page.toLocaleString("id-ID") }}
+                                    dari {{ databasePreview.pagination.last_page.toLocaleString("id-ID") }}.
+                                </p>
+                                <Button
+                                    :label="databasePreview.period.mode === 'month' ? 'Import satu bulan' : 'Import tanggal ini'"
+                                    icon="pi pi-database"
+                                    severity="success"
+                                    class="w-full sm:w-auto"
+                                    :loading="databaseImportForm.processing || databaseImportRunning"
+                                    :disabled="databasePreview.summary.matched === 0 || databaseImportRunning"
+                                    @click="importDatabaseAttendance"
+                                />
+                            </div>
+                        </template>
+
+                        <EmptyState
+                            v-else-if="!databasePreviewLoading"
+                            title="Pilih periode source"
+                            description="Tentukan tanggal atau bulan attendance lalu klik Preview data."
+                            icon="pi pi-database"
+                        />
+                    </div>
+                </template>
+
                 <template v-else>
                     <div v-if="latestImport" class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.75fr)]">
                         <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
@@ -1640,6 +2097,10 @@ function statusSeverity(status) {
                                 <div>
                                     <p class="text-xs text-slate-500">Missed punch</p>
                                     <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.missing_punch_count.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-slate-500">Perlu review</p>
+                                    <p class="font-semibold text-red-700 dark:text-red-300">{{ latestImport.review_required_count.toLocaleString("id-ID") }}</p>
                                 </div>
                             </div>
                             <div v-if="latestImport.unmatched_user_ids.length" class="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">

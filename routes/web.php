@@ -1,7 +1,9 @@
 <?php
 
+use App\Http\Controllers\Admin\AttendanceBulkCorrectionController;
 use App\Http\Controllers\Admin\AttendanceCleanupController;
 use App\Http\Controllers\Admin\AttendanceController;
+use App\Http\Controllers\Admin\AttendanceDatabaseImportController;
 use App\Http\Controllers\Admin\AttendanceImportController;
 use App\Http\Controllers\Admin\AttendanceScheduleGuideController;
 use App\Http\Controllers\Admin\CalendarOverrideController;
@@ -35,7 +37,7 @@ Route::middleware('auth')->group(function () {
     Route::delete('/profile', [ProfileController::class, 'destroy'])->name('profile.destroy');
 });
 
-Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(function () {
+Route::middleware(['auth', 'verified', 'password.changed'])->prefix('admin')->name('admin.')->group(function () {
     Route::get('/', DashboardController::class)->name('dashboard');
     Route::get('/panduan', GuideController::class)->name('guide.index');
 
@@ -60,6 +62,12 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
         Route::get('/schedule-guide', [AttendanceScheduleGuideController::class, 'download'])
             ->name('schedule-guide.download');
         Route::post('/import', [AttendanceImportController::class, 'store'])->name('import');
+        Route::get('/import/database', [AttendanceDatabaseImportController::class, 'preview'])
+            ->name('database-import.preview');
+        Route::post('/import/database', [AttendanceDatabaseImportController::class, 'store'])
+            ->name('database-import.store');
+        Route::post('/import/database/day', [AttendanceDatabaseImportController::class, 'storeDay'])
+            ->name('database-import.store-day');
         Route::post('/', [AttendanceController::class, 'store'])->name('store');
         Route::delete('/day', [AttendanceController::class, 'destroyDay'])->name('destroy-day');
         Route::put('/inline', [AttendanceController::class, 'updateInline'])->name('update-inline');
@@ -112,6 +120,10 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
             ->name('developer-settings.copy-master-data');
         Route::delete('/developer-settings/attendance-cleanup', [AttendanceCleanupController::class, 'destroy'])
             ->name('developer-settings.attendance-cleanup.destroy');
+        Route::get('/developer-settings/attendance-bulk', [AttendanceBulkCorrectionController::class, 'preview'])
+            ->name('developer-settings.attendance-bulk.preview');
+        Route::put('/developer-settings/attendance-bulk', [AttendanceBulkCorrectionController::class, 'update'])
+            ->name('developer-settings.attendance-bulk.update');
         Route::post('/developer-settings/national-holidays', [NationalHolidayController::class, 'store'])
             ->name('developer-settings.national-holidays.store');
         Route::put('/developer-settings/national-holidays/{nationalHoliday}', [NationalHolidayController::class, 'update'])

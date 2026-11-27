@@ -21,6 +21,7 @@ class AttendanceTimeCalculator
      *     overtime_hours: float,
      *     holiday_worked_hours: float,
      *     holiday_overtime_hours: float,
+     *     night_shift_allowance: float,
      *     requires_review: bool,
      *     notes: list<string>
      * }
@@ -82,6 +83,14 @@ class AttendanceTimeCalculator
             );
         }
 
+        $nightShiftAllowance = $schedule->shift === 'night' && $workedHours > 0
+            ? 1.0
+            : 0.0;
+
+        if ($nightShiftAllowance > 0) {
+            $notes[] = 'Shift malam: tambahan allowance 1 jam lembur.';
+        }
+
         if ($schedule->isHolidayPay) {
             $notes[] = $schedule->holidayName
                 ? "Kerja pada libur {$schedule->holidayName}; jam kerja dan lembur dikali 2."
@@ -92,6 +101,7 @@ class AttendanceTimeCalculator
                 'overtime_hours' => 0.0,
                 'holiday_worked_hours' => (float) ($workedHours * 2),
                 'holiday_overtime_hours' => (float) ($overtimeHours * 2),
+                'night_shift_allowance' => $nightShiftAllowance,
                 'requires_review' => $requiresReview,
                 'notes' => $notes,
             ];
@@ -102,6 +112,7 @@ class AttendanceTimeCalculator
             'overtime_hours' => $overtimeHours,
             'holiday_worked_hours' => 0.0,
             'holiday_overtime_hours' => 0.0,
+            'night_shift_allowance' => $nightShiftAllowance,
             'requires_review' => $requiresReview,
             'notes' => $notes,
         ];
@@ -205,6 +216,7 @@ class AttendanceTimeCalculator
      *     overtime_hours: float,
      *     holiday_worked_hours: float,
      *     holiday_overtime_hours: float,
+     *     night_shift_allowance: float,
      *     requires_review: bool,
      *     notes: list<string>
      * }  $summary
@@ -213,6 +225,7 @@ class AttendanceTimeCalculator
      *     overtime_hours: float,
      *     holiday_worked_hours: float,
      *     holiday_overtime_hours: float,
+     *     night_shift_allowance: float,
      *     requires_review: bool,
      *     notes: list<string>
      * }
@@ -423,6 +436,7 @@ class AttendanceTimeCalculator
      *     overtime_hours: float,
      *     holiday_worked_hours: float,
      *     holiday_overtime_hours: float,
+     *     night_shift_allowance: float,
      *     requires_review: bool,
      *     notes: list<string>
      * }
@@ -434,6 +448,7 @@ class AttendanceTimeCalculator
             'overtime_hours' => 0.0,
             'holiday_worked_hours' => 0.0,
             'holiday_overtime_hours' => 0.0,
+            'night_shift_allowance' => 0.0,
             'requires_review' => $requiresReview,
             'notes' => $notes,
         ];

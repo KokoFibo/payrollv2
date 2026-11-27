@@ -76,7 +76,10 @@ class UserController extends Controller
         $validated = $request->validated();
 
         $user = User::query()->create($validated);
-        $user->forceFill(['email_verified_at' => now()])->save();
+        $user->forceFill([
+            'email_verified_at' => now(),
+            'must_change_password' => true,
+        ])->save();
 
         return back()->with('toast', [
             'type' => 'success',
@@ -95,11 +98,17 @@ class UserController extends Controller
             ]);
         }
 
-        if (($validated['password'] ?? null) === null) {
+        $passwordWasChanged = ($validated['password'] ?? null) !== null;
+
+        if (! $passwordWasChanged) {
             unset($validated['password']);
         }
 
         $user->update($validated);
+
+        if ($passwordWasChanged) {
+            $user->forceFill(['must_change_password' => true])->save();
+        }
 
         return back()->with('toast', [
             'type' => 'success',

@@ -5,6 +5,8 @@ namespace App\Support\Attendance;
 use App\Models\AttendanceImport;
 use App\Models\AttendanceRecord;
 use App\Models\Karyawan;
+use App\Models\User;
+use App\Support\PayrollAuditService;
 use Carbon\CarbonImmutable;
 use DomainException;
 use Illuminate\Http\UploadedFile;
@@ -19,10 +21,12 @@ class AttendanceImportService
         private AttendanceScheduleResolver $scheduleResolver,
         private AttendanceTimeCalculator $timeCalculator,
         private AttendanceLatenessCalculator $latenessCalculator,
+        private PayrollAuditService $payrollAuditService,
     ) {}
 
-    public function import(UploadedFile $file, int $importedBy): AttendanceImport
+    public function import(UploadedFile $file, User $actor): AttendanceImport
     {
+        $importedBy = $actor->id;
         try {
             $workbook = $this->workbookReader->read((string) $file->getRealPath());
         } catch (DomainException $exception) {
@@ -34,6 +38,7 @@ class AttendanceImportService
         $employees = $this->employeesByNip(
             array_column($workbook['employees'], 'source_user_id'),
         );
+        $employeesById = $employees->keyBy('id');
 
         if ($employees->isEmpty()) {
             throw ValidationException::withMessages([
@@ -178,6 +183,7 @@ class AttendanceImportService
                 'overtime_hours' => $timeSummary['overtime_hours'],
                 'holiday_worked_hours' => $timeSummary['holiday_worked_hours'],
                 'holiday_overtime_hours' => $timeSummary['holiday_overtime_hours'],
+                'night_shift_allowance' => $timeSummary['night_shift_allowance'],
                 'raw_punch_count' => count($punches),
                 'effective_punch_count' => count($clockPunches),
                 'duplicate_punch_count' => $duplicateCount,
@@ -236,6 +242,9 @@ class AttendanceImportService
             $missingPunchCount,
             $lateCount,
             $earlyLeaveCount,
+            $actor,
+            $existingRecords,
+            $employeesById,
         ): AttendanceImport {
             $import = AttendanceImport::query()->create([
                 'imported_by' => $importedBy,
@@ -289,6 +298,7 @@ class AttendanceImportService
                     'overtime_hours',
                     'holiday_worked_hours',
                     'holiday_overtime_hours',
+                    'night_shift_allowance',
                     'raw_punch_count',
                     'effective_punch_count',
                     'duplicate_punch_count',
@@ -309,6 +319,46 @@ class AttendanceImportService
                     'updated_at',
                 ],
             );
+
+            foreach ($summaryRows as $summary) {
+                $existingRecord = $existingRecords->get($summary['karyawan_id']);
+                $employee = $employeesById->get($summary['karyawan_id']);
+
+                if (! $employee instanceof Karyawan) {
+                    continue;
+                }
+
+                $auditRecord = $existingRecord instanceof AttendanceRecord
+                    ? clone $existingRecord
+                    : new AttendanceRecord([
+                        'karyawan_id' => $summary['karyawan_id'],
+                        'attendance_date' => $summary['attendance_date'],
+                    ]);
+                $auditRecord->fill($summary);
+                $changes = $this->payrollAuditService->changesFor(
+                    $auditRecord,
+                    PayrollAuditService::ATTENDANCE_FIELDS,
+                    $existingRecord instanceof AttendanceRecord ? 'updated' : 'created',
+                );
+
+                if ($changes === []) {
+                    continue;
+                }
+
+                $this->payrollAuditService->record(
+                    eventType: 'attendance_imported',
+                    subjectType: 'attendance_record',
+                    subjectId: $existingRecord?->id,
+                    subjectLabel: "Attendance {$employee->nip} · {$summary['attendance_date']}",
+                    changes: $changes,
+                    metadata: [
+                        'attendance_import_id' => $import->id,
+                        'filename' => $import->original_filename,
+                    ],
+                    employee: $employee,
+                    actor: $actor,
+                );
+            }
 
             return $import->refresh();
         });

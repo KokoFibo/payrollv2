@@ -15,7 +15,7 @@ class AttendanceImportController extends Controller
     ): RedirectResponse {
         $import = $attendanceImportService->import(
             $request->file('attendance_file'),
-            $request->user()->id,
+            $request->user(),
         );
         $message = "{$import->processed_employee_count} karyawan diproses. "
             ."{$import->skipped_without_punch_count} ID tanpa punch dilewati.";

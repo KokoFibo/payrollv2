@@ -2,7 +2,14 @@
 
 namespace App\Providers;
 
+use App\Models\AdminVisibilitySetting;
+use App\Models\AttendanceRecord;
+use App\Models\Karyawan;
+use App\Models\PayrollItem;
+use App\Models\PayrollPeriod;
+use App\Models\Setting;
 use App\Models\User;
+use App\Observers\PayrollAuditObserver;
 use App\Support\Attendance\AttendanceScheduleResolver;
 use App\Support\Attendance\CalendarOverrideResolver;
 use App\Support\Attendance\NationalHolidayResolver;
@@ -35,6 +42,13 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Vite::prefetch(concurrency: 3);
+
+        Karyawan::observe(PayrollAuditObserver::class);
+        AttendanceRecord::observe(PayrollAuditObserver::class);
+        PayrollPeriod::observe(PayrollAuditObserver::class);
+        PayrollItem::observe(PayrollAuditObserver::class);
+        Setting::observe(PayrollAuditObserver::class);
+        AdminVisibilitySetting::observe(PayrollAuditObserver::class);
 
         Gate::define(
             'access-developer-settings',

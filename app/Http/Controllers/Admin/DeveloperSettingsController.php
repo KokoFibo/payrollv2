@@ -4,16 +4,22 @@ namespace App\Http\Controllers\Admin;
 
 use App\Enums\KaryawanStatus;
 use App\Http\Controllers\Controller;
+use App\Models\AttendanceRecord;
 use App\Models\CalendarOverride;
 use App\Models\Company;
+use App\Models\Department;
+use App\Models\Directorate;
+use App\Models\Jabatan;
 use App\Models\Karyawan;
 use App\Models\NationalHoliday;
 use App\Models\SpecialWorkSchedule;
 use App\Support\AdminSalaryVisibility;
+use App\Support\Attendance\AttendanceBulkCorrectionService;
 use App\Support\Attendance\AttendanceCleanupService;
 use App\Support\Attendance\AttendancePolicySettings;
 use App\Support\MasterDataResources;
 use App\Support\Payroll\KaryawanMigrationService;
+use App\Support\PayrollAuditService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -41,7 +47,7 @@ class DeveloperSettingsController extends Controller
             $resource = 'companies';
         }
 
-        if ($initialSection !== 'work-schedules') {
+        if (! in_array($initialSection, ['work-schedules', 'attendance-bulk'], true)) {
             $initialSection = 'master';
         }
 
@@ -98,6 +104,33 @@ class DeveloperSettingsController extends Controller
             ->map(fn (Company $company): array => [
                 'value' => $company->id,
                 'label' => $company->name,
+            ])
+            ->all();
+        $directorateOptions = Directorate::query()
+            ->whereNotNull('name')
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (Directorate $directorate): array => [
+                'value' => $directorate->id,
+                'label' => $directorate->name,
+            ])
+            ->all();
+        $departmentOptions = Department::query()
+            ->whereNotNull('name')
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (Department $department): array => [
+                'value' => $department->id,
+                'label' => $department->name,
+            ])
+            ->all();
+        $jabatanOptions = Jabatan::query()
+            ->whereNotNull('name')
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (Jabatan $jabatan): array => [
+                'value' => $jabatan->id,
+                'label' => $jabatan->name,
             ])
             ->all();
         $nationalHolidays = NationalHoliday::query()
@@ -212,6 +245,31 @@ class DeveloperSettingsController extends Controller
                 'filename' => AttendanceScheduleGuideController::TemplateFilename,
                 'downloadAvailable' => is_file(AttendanceScheduleGuideController::templatePath()),
             ],
+            'attendanceBulkOptions' => [
+                'companies' => $companyOptions,
+                'directorates' => $directorateOptions,
+                'departments' => $departmentOptions,
+                'jabatans' => $jabatanOptions,
+                'statuses' => collect(AttendanceRecord::STATUSES)
+                    ->map(fn (string $label, string $value): array => compact('value', 'label'))
+                    ->values()
+                    ->all(),
+                'shifts' => [
+                    ['value' => 'day', 'label' => 'Shift pagi'],
+                    ['value' => 'night', 'label' => 'Shift malam'],
+                ],
+                'profiles' => collect((array) config('attendance.profiles'))
+                    ->map(fn (array $profile, string $value): array => [
+                        'value' => $value,
+                        'label' => (string) ($profile['label'] ?? $value),
+                    ])
+                    ->values()
+                    ->all(),
+                'conditions' => collect(AttendanceBulkCorrectionService::CONDITIONS)
+                    ->map(fn (string $label, string $value): array => compact('value', 'label'))
+                    ->values()
+                    ->all(),
+            ],
             'initialSection' => $initialSection,
             'workCalendarOptions' => [
                 'companies' => $companyOptions,
@@ -279,12 +337,25 @@ class DeveloperSettingsController extends Controller
         ]);
     }
 
-    public function copy(KaryawanMigrationService $migrationService): RedirectResponse
-    {
+    public function copy(
+        KaryawanMigrationService $migrationService,
+        PayrollAuditService $payrollAuditService,
+    ): RedirectResponse {
         Gate::authorize('access-developer-settings');
 
         try {
             $result = $migrationService->copy();
+            $payrollAuditService->record(
+                eventType: 'employee_migrated',
+                subjectType: 'database_migration',
+                subjectId: null,
+                subjectLabel: 'Copy karyawan dari '.config('database.source_database'),
+                changes: [],
+                metadata: [
+                    'statistics' => $result['statistics'],
+                    'source_database' => config('database.source_database'),
+                ],
+            );
 
             return redirect()
                 ->route('admin.developer-settings.index', ['resource' => 'companies'])

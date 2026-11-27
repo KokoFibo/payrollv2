@@ -7,6 +7,7 @@ import PageHeader from "@/Components/Admin/PageHeader.vue";
 import StatCard from "@/Components/Admin/StatCard.vue";
 import FormField from "@/Components/Admin/FormField.vue";
 import EmptyState from "@/Components/Admin/EmptyState.vue";
+import AttendanceBulkCorrectionPanel from "@/Components/Admin/DeveloperSettings/AttendanceBulkCorrectionPanel.vue";
 import AttendanceCleanupPanel from "@/Components/Admin/DeveloperSettings/AttendanceCleanupPanel.vue";
 import CalendarOverridePanel from "@/Components/Admin/DeveloperSettings/CalendarOverridePanel.vue";
 import NationalHolidayPanel from "@/Components/Admin/DeveloperSettings/NationalHolidayPanel.vue";
@@ -29,6 +30,7 @@ const props = defineProps({
     calendarOverrides: { type: Array, required: true },
     specialWorkSchedules: { type: Array, required: true },
     scheduleGuide: { type: Object, required: true },
+    attendanceBulkOptions: { type: Object, required: true },
     initialSection: { type: String, default: "master" },
     workCalendarOptions: { type: Object, required: true },
     counts: { type: Object, required: true },
@@ -68,6 +70,7 @@ const navigationItems = computed(() => [
     { value: "holidays", section: "holidays", label: "Hari Libur", caption: "Kalender nasional", icon: "pi pi-calendar" },
     { value: "calendar-overrides", section: "calendar-overrides", label: "Pengecualian Kalender", caption: "Libur per company", icon: "pi pi-calendar-clock" },
     { value: "work-schedules", section: "work-schedules", label: "Jadwal Kerja", caption: "Ramadan & periode khusus", icon: "pi pi-clock" },
+    { value: "attendance-bulk", section: "attendance-bulk", label: "Koreksi Presensi", caption: "Bulk punch & kalkulasi", icon: "pi pi-pencil" },
     { value: "attendance-cleanup", section: "attendance-cleanup", label: "Bersihkan Presensi", caption: "Hapus rekap per bulan", icon: "pi pi-trash" },
     ...props.resources.map((item) => ({
         value: item.value,
@@ -471,6 +474,10 @@ function copyMasterData() {
                     :options="workCalendarOptions"
                     :schedule-guide="scheduleGuide"
                 />
+            </section>
+
+            <section v-show="section === 'attendance-bulk'" class="space-y-4">
+                <AttendanceBulkCorrectionPanel :options="attendanceBulkOptions" />
             </section>
 
             <section v-show="section === 'attendance-cleanup'" class="space-y-4">
