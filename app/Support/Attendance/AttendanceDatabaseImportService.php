@@ -230,6 +230,7 @@ class AttendanceDatabaseImportService
             ]);
             $statistics = [
                 'processed' => 0,
+                'skipped_without_punch' => 0,
                 'raw_punches' => 0,
                 'missing_punches' => 0,
                 'review_required' => 0,
@@ -313,6 +314,12 @@ class AttendanceDatabaseImportService
                             continue;
                         }
 
+                        if ($this->presentPunchCount($sourceRow) === 0) {
+                            $statistics['skipped_without_punch']++;
+
+                            continue;
+                        }
+
                         $targetKey = $employee->id.'|'.$sourceRow->date;
 
                         if (isset($seenTargetKeys[$targetKey])) {
@@ -378,6 +385,7 @@ class AttendanceDatabaseImportService
 
             $import->update([
                 'processed_employee_count' => $statistics['processed'],
+                'skipped_without_punch_count' => $statistics['skipped_without_punch'],
                 'raw_punch_count' => $statistics['raw_punches'],
                 'missing_punch_count' => $statistics['missing_punches'],
                 'late_count' => $statistics['late'],
@@ -527,7 +535,7 @@ class AttendanceDatabaseImportService
         return [
             'karyawan_id' => $employee->id,
             'attendance_date' => $date->toDateString(),
-            'status' => ! isset($slotPunches['first_in'])
+            'status' => $presentPunches === []
                 ? 'absent'
                 : ($hasSourceLateFlag ? 'late' : 'present'),
             'shift' => $sourceIsNight ? 'night' : 'day',
@@ -789,6 +797,16 @@ class AttendanceDatabaseImportService
         $normalized = substr(trim((string) $time), 0, 5);
 
         return in_array($normalized, ['00:00'], true) ? null : $normalized;
+    }
+
+    private function presentPunchCount(object $source): int
+    {
+        return count(array_filter(
+            array_map(
+                fn (string $slot): ?string => $this->shortTime($source->{$slot} ?? null),
+                self::SlotNames,
+            ),
+        ));
     }
 
     private function hasText(mixed $value): bool

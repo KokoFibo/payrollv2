@@ -100,6 +100,7 @@ test('database attendance import updates and creates records with audit history'
             'total_jam_lembur_libur' => 3.0,
         ]),
         attendanceSourceRow($noScanEmployee, '2026-11-20', [
+            'second_in' => '12:30:00',
             'no_scan' => 'No Scan',
             'no_scan_history' => 'No Scan',
         ]),
@@ -141,7 +142,7 @@ test('database attendance import updates and creates records with audit history'
         ->where('karyawan_id', $noScanEmployee->id)
         ->whereDate('attendance_date', '2026-11-20')
         ->firstOrFail())
-        ->status->toBe('absent')
+        ->status->toBe('present')
         ->has_missing_punch->toBeTrue()
         ->requires_review->toBeTrue();
     expect(PayrollAuditLog::query()
@@ -171,6 +172,7 @@ test('database attendance import processes a full month and calculates review st
             'total_hari_kerja' => 1.0,
         ]),
         attendanceSourceRow($employee, '2026-11-02', [
+            'second_in' => '12:30:00',
             'no_scan' => 'No Scan',
             'no_scan_history' => 'No Scan',
         ]),
@@ -266,6 +268,67 @@ test('database attendance batch endpoint imports one source day', function () {
         ->where('karyawan_id', $employee->id)
         ->whereDate('attendance_date', '2026-11-03')
         ->exists())->toBeTrue();
+});
+
+test('database attendance import marks an employee present with any single punch', function () {
+    useAttendanceSourceDatabase();
+    $developer = User::factory()->create(['role' => 8]);
+    $employee = Karyawan::factory()->create([
+        'nip' => 5401,
+        'status_karyawan' => KaryawanStatus::Pkwt->value,
+    ]);
+    insertAttendanceSourceRows([
+        attendanceSourceRow($employee, '2026-11-04', [
+            'second_in' => '12:30:00',
+        ]),
+    ]);
+
+    $this->actingAs($developer)
+        ->post(route('admin.attendance.database-import.store'), [
+            'attendance_date' => '2026-11-04',
+        ])
+        ->assertRedirect(route('admin.attendance.index', ['date' => '2026-11-04']));
+
+    expect(AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-04')
+        ->firstOrFail())
+        ->status->toBe('present')
+        ->has_missing_punch->toBeTrue()
+        ->requires_review->toBeTrue();
+});
+
+test('database attendance import skips rows without any punch', function () {
+    useAttendanceSourceDatabase();
+    $developer = User::factory()->create(['role' => 8]);
+    $employee = Karyawan::factory()->create([
+        'nip' => 5501,
+        'status_karyawan' => KaryawanStatus::Pkwt->value,
+    ]);
+    $validEmployee = Karyawan::factory()->create([
+        'nip' => 5502,
+        'status_karyawan' => KaryawanStatus::Pkwt->value,
+    ]);
+    insertAttendanceSourceRows([
+        attendanceSourceRow($employee, '2026-11-05'),
+        attendanceSourceRow($validEmployee, '2026-11-05', [
+            'second_in' => '12:30:00',
+        ]),
+    ]);
+
+    $this->actingAs($developer)
+        ->post(route('admin.attendance.database-import.store'), [
+            'attendance_date' => '2026-11-05',
+        ])
+        ->assertRedirect();
+
+    expect(AttendanceRecord::query()
+        ->where('karyawan_id', $employee->id)
+        ->whereDate('attendance_date', '2026-11-05')
+        ->exists())->toBeFalse();
+    expect(AttendanceImport::query()->firstOrFail())
+        ->processed_employee_count->toBe(1)
+        ->skipped_without_punch_count->toBe(1);
 });
 
 test('database attendance import rejects unsupported roles', function () {

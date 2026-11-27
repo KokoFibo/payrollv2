@@ -70,6 +70,10 @@ class AttendanceDatabaseImportController extends Controller
 
         $message = "{$import->processed_employee_count} attendance diproses dari database source.";
 
+        if ($import->skipped_without_punch_count > 0) {
+            $message .= " {$import->skipped_without_punch_count} record tanpa punch dilewati.";
+        }
+
         if ($import->unmatched_employee_count > 0) {
             $message .= " {$import->unmatched_employee_count} record tanpa NIP cocok dilewati.";
         }
