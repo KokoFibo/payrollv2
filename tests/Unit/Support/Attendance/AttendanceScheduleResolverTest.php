@@ -97,7 +97,7 @@ it('matches the reference work schedule for every profile and shift', function (
     'general weekday day' => ['Production', 'General Worker', 'general', '2026-11-19', '2026-11-19 08:00:00', 'day', '2026-11-19 08:00', '2026-11-19 17:00', 8.0],
     'general weekday night' => ['Production', 'General Worker', 'general', '2026-11-19', '2026-11-19 20:00:00', 'night', '2026-11-19 20:00', '2026-11-20 05:00', 8.0],
     'general friday day' => ['Production', 'General Worker', 'general', '2026-11-20', '2026-11-20 08:00:00', 'day', '2026-11-20 08:00', '2026-11-20 17:00', 7.5],
-    'general friday night' => ['Production', 'General Worker', 'general', '2026-11-20', '2026-11-20 20:00:00', 'night', '2026-11-20 20:00', '2026-11-21 05:00', 7.5],
+    'general friday night' => ['Production', 'General Worker', 'general', '2026-11-20', '2026-11-20 20:00:00', 'night', '2026-11-20 20:00', '2026-11-21 05:00', 8.0],
     'general saturday day' => ['Production', 'General Worker', 'general', '2026-11-21', '2026-11-21 08:00:00', 'day', '2026-11-21 08:00', '2026-11-21 15:00', 6.0],
     'general saturday night' => ['Production', 'General Worker', 'general', '2026-11-21', '2026-11-21 17:00:00', 'night', '2026-11-21 17:00', '2026-11-22 00:00', 6.0],
     'security weekday day' => ['Security', 'Security', 'security', '2026-11-19', '2026-11-19 08:00:00', 'day', '2026-11-19 08:00', '2026-11-19 20:00', 8.0],
@@ -109,7 +109,7 @@ it('matches the reference work schedule for every profile and shift', function (
     'qc aging weekday day' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-19', '2026-11-19 08:00:00', 'day', '2026-11-19 08:00', '2026-11-19 17:00', 8.0],
     'qc aging weekday night' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-19', '2026-11-19 20:00:00', 'night', '2026-11-19 20:00', '2026-11-20 05:00', 8.0],
     'qc aging friday day' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-20', '2026-11-20 08:00:00', 'day', '2026-11-20 08:00', '2026-11-20 17:00', 7.5],
-    'qc aging friday night' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-20', '2026-11-20 20:00:00', 'night', '2026-11-20 20:00', '2026-11-21 05:00', 7.5],
+    'qc aging friday night' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-20', '2026-11-20 20:00:00', 'night', '2026-11-20 20:00', '2026-11-21 05:00', 8.0],
     'qc aging saturday day' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-21', '2026-11-21 08:00:00', 'day', '2026-11-21 08:00', '2026-11-21 15:00', 6.0],
     'qc aging saturday night' => ['Quality', 'QC Aging', 'qc_aging', '2026-11-21', '2026-11-21 20:00:00', 'night', '2026-11-21 20:00', '2026-11-22 03:00', 6.0],
 ]);

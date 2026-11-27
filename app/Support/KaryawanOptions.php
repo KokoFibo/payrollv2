@@ -27,6 +27,15 @@ final class KaryawanOptions
         'S3',
     ];
 
+    public const MARITAL_STATUSES = [
+        'Belum Menikah',
+        'Menikah',
+        'Belum Kawin',
+        'Kawin',
+        'Cerai Hidup',
+        'Cerai Mati',
+    ];
+
     public const PTKP = [
         'TK0' => 'TK/0',
         'TK1' => 'TK/1',

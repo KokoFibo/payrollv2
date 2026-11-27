@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Head, router, useForm } from "@inertiajs/vue3";
 import { useConfirm } from "primevue/useconfirm";
+import Paginator from "primevue/paginator";
 import AdminLayout from "@/Layouts/AdminLayout.vue";
 import PageHeader from "@/Components/Admin/PageHeader.vue";
 import StatCard from "@/Components/Admin/StatCard.vue";
@@ -16,6 +17,8 @@ const props = defineProps({
     options: { type: Object, required: true },
     stats: { type: Object, required: true },
     recentImports: { type: Array, required: true },
+    specialWorkSchedules: { type: Array, required: true },
+    scheduleGuide: { type: Object, required: true },
     dateInfo: { type: Object, required: true },
 });
 
@@ -32,10 +35,36 @@ const anomalyScanVisible = ref(false);
 const anomalyScanLoading = ref(false);
 const anomalyScanError = ref("");
 const anomalyScanResult = ref(null);
+const guideDialogVisible = ref(false);
+const guideSection = ref("reguler");
+const importDialogVisible = ref(false);
+const importSection = ref("rekap");
+const filtersExpanded = ref(false);
+const notesVisible = ref(false);
 let deletedPunchTimeout = null;
-const filters = reactive({ ...props.filters });
+const filters = reactive(normalizedFilterState(props.filters));
 const uploadProgress = computed(() => uploadForm.progress?.percentage ?? 0);
 const latestImport = computed(() => props.recentImports[0] ?? null);
+const activeFilterCount = computed(() => [
+    filters.search?.trim(),
+    filters.companyId,
+    filters.directorateId,
+    filters.departmentId,
+    filters.jabatanId,
+    filters.status,
+    filters.shift,
+    filters.lateOnly,
+    filters.reviewOnly,
+].filter(Boolean).length);
+const importSections = [
+    { label: "Rekap Absensi", value: "rekap", icon: "pi pi-upload" },
+    { label: "Riwayat Import", value: "riwayat", icon: "pi pi-history" },
+];
+const guideSections = [
+    { label: "Jadwal Reguler", value: "reguler", icon: "pi pi-table" },
+    { label: "Ketentuan", value: "ketentuan", icon: "pi pi-list-check" },
+    { label: "Jadwal Khusus", value: "khusus", icon: "pi pi-calendar-clock" },
+];
 const perPageOptions = [5, 10, 15, 25, 50, 100];
 const periodLabel = computed(() => formatDate(filters.date));
 const longDateLabel = computed(() => {
@@ -48,9 +77,6 @@ const longDateLabel = computed(() => {
         year: "numeric",
     }).format(date);
 });
-const editableStatuses = computed(() => props.options.statuses.filter(
-    (status) => status.value !== "missing",
-));
 const punchColumns = [
     { field: "first_in", label: "First In" },
     { field: "first_out", label: "First Out" },
@@ -100,9 +126,34 @@ const inlineForm = useForm({
 
 watch(
     () => props.filters,
-    (nextFilters) => Object.assign(filters, nextFilters),
+    (nextFilters) => {
+        if (!loading.value) {
+            Object.assign(filters, normalizedFilterState(nextFilters));
+        }
+    },
     { deep: true },
 );
+
+function normalizedFilterState(source) {
+    return {
+        ...source,
+        companyId: filterId(source.companyId),
+        directorateId: filterId(source.directorateId),
+        departmentId: filterId(source.departmentId),
+        jabatanId: filterId(source.jabatanId),
+        perPage: Number(source.perPage) || 5,
+    };
+}
+
+function filterId(value) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+
+    const id = Number(value);
+
+    return Number.isFinite(id) ? id : null;
+}
 
 function load() {
     router.get(route("admin.attendance.index"), queryParams(), {
@@ -149,6 +200,7 @@ function openEdit(record) {
 }
 
 function startInlineEdit(record) {
+    clearDeletedPunchNotice();
     inlineEditingRecordId.value = record.id;
     inlineForm.clearErrors();
     inlineForm.status = record.status === "missing" ? "present" : record.status;
@@ -162,11 +214,13 @@ function startInlineEdit(record) {
 
 function cancelInlineEdit() {
     inlineEditingRecordId.value = null;
+    inlineForm.reset();
     inlineForm.clearErrors();
+    clearDeletedPunchNotice();
     endPunchDrag();
 }
 
-function saveInline(record, options = {}) {
+function saveInline(record) {
     inlineForm.transform((data) => ({
         karyawan_id: record.employee.id,
         attendance_date: record.attendance_date,
@@ -182,13 +236,10 @@ function saveInline(record, options = {}) {
     inlineForm.put(route("admin.attendance.update-inline"), {
         preserveScroll: true,
         onSuccess: () => {
-            if (options.closeOnSuccess !== false) {
-                inlineEditingRecordId.value = null;
-            }
-
-            options.onSuccess?.();
+            inlineEditingRecordId.value = null;
+            inlineForm.reset();
+            clearDeletedPunchNotice();
         },
-        onError: (errors) => options.onError?.(errors),
     });
 }
 
@@ -249,14 +300,6 @@ function dropPunch(record, field, event) {
     inlineForm[source.field] = targetValue;
     inlineForm[field] = sourceValue;
     endPunchDrag();
-
-    saveInline(record, {
-        closeOnSuccess: false,
-        onError: () => {
-            inlineForm[source.field] = sourceValue;
-            inlineForm[field] = targetValue;
-        },
-    });
 }
 
 function deletePunch(record, field) {
@@ -267,14 +310,7 @@ function deletePunch(record, field) {
     const previousValue = inlineForm[field];
     const punchLabel = punchColumns.find((punch) => punch.field === field)?.label || field;
     inlineForm[field] = "";
-
-    saveInline(record, {
-        closeOnSuccess: false,
-        onSuccess: () => rememberDeletedPunch(record.id, field, punchLabel, previousValue),
-        onError: () => {
-            inlineForm[field] = previousValue;
-        },
-    });
+    rememberDeletedPunch(record.id, field, punchLabel, previousValue);
 }
 
 function rememberDeletedPunch(recordId, field, label, value) {
@@ -294,24 +330,20 @@ function undoPunchDelete() {
 
     const record = props.records.data.find((item) => item.id === deletion.recordId);
 
-    if (!record) {
-        deletedPunch.value = null;
+    if (!record || !isInlineEditing(record)) {
+        clearDeletedPunchNotice();
 
         return;
     }
 
-    if (!isInlineEditing(record)) {
-        startInlineEdit(record);
-    }
-
     inlineForm[deletion.field] = deletion.value;
-    saveInline(record, {
-        closeOnSuccess: false,
-        onSuccess: () => {
-            window.clearTimeout(deletedPunchTimeout);
-            deletedPunch.value = null;
-        },
-    });
+    clearDeletedPunchNotice();
+}
+
+function clearDeletedPunchNotice() {
+    window.clearTimeout(deletedPunchTimeout);
+    deletedPunchTimeout = null;
+    deletedPunch.value = null;
 }
 
 onBeforeUnmount(() => window.clearTimeout(deletedPunchTimeout));
@@ -356,15 +388,31 @@ function removeRecord(record) {
     });
 }
 
-function clearReview(record) {
+function resolveReview(record) {
     confirm.require({
-        message: `Hapus status review ${record.employee.name} tanggal ${formatDate(record.attendance_date)}? Punch dan jam kerja tidak akan berubah.`,
-        header: "Hapus status review?",
+        message: `Tandai data absensi ${record.employee.name} tanggal ${formatDate(record.attendance_date)} sudah benar? Punch dan jam kerja tidak akan berubah.`,
+        header: "Tandai review selesai?",
+        icon: "pi pi-check-circle",
+        rejectLabel: "Batal",
+        acceptLabel: "Ya, data benar",
+        rejectClass: "p-button-secondary p-button-outlined",
+        acceptClass: "p-button-success",
+        accept: () => router.put(
+            route("admin.attendance.resolve-review", record.id),
+            { preserveScroll: true },
+        ),
+    });
+}
+
+function deleteReview(record) {
+    confirm.require({
+        message: `Hapus review ${record.employee.name} tanggal ${formatDate(record.attendance_date)}? Data tidak akan ditandai sebagai sudah benar.`,
+        header: "Hapus review?",
         icon: "pi pi-exclamation-triangle",
         rejectLabel: "Batal",
         acceptLabel: "Hapus review",
         rejectClass: "p-button-secondary p-button-outlined",
-        acceptClass: "p-button-warning",
+        acceptClass: "p-button-danger",
         accept: () => router.delete(
             route("admin.attendance.destroy-review", record.id),
             { preserveScroll: true },
@@ -388,11 +436,18 @@ function uploadAttendance() {
     });
 }
 
-function scrollToImport() {
-    document.getElementById("attendance-import")?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-    });
+function downloadScheduleGuide() {
+    window.location.assign(route("admin.attendance.schedule-guide.download"));
+}
+
+function openImportDialog(section = "rekap") {
+    importSection.value = section;
+    importDialogVisible.value = true;
+}
+
+function openGuideDialog() {
+    guideSection.value = "reguler";
+    guideDialogVisible.value = true;
 }
 
 function openAnomalyScan() {
@@ -506,6 +561,27 @@ function clearSearch() {
     load();
 }
 
+function clearFilters() {
+    filters.search = "";
+    filters.companyId = null;
+    filters.directorateId = null;
+    filters.departmentId = null;
+    filters.jabatanId = null;
+    filters.status = "";
+    filters.shift = "";
+    filters.lateOnly = false;
+    filters.reviewOnly = false;
+    load();
+}
+
+function toggleFilters() {
+    filtersExpanded.value = !filtersExpanded.value;
+}
+
+function toggleNotes() {
+    notesVisible.value = !notesVisible.value;
+}
+
 function changeCompany() {
     filters.directorateId = null;
     filters.departmentId = null;
@@ -566,6 +642,7 @@ function queryParams() {
     return {
         date: filters.date,
         status: filters.status,
+        shift: filters.shift,
         company_id: filters.companyId,
         directorate_id: filters.directorateId,
         department_id: filters.departmentId,
@@ -573,6 +650,7 @@ function queryParams() {
         search: filters.search,
         perPage: filters.perPage,
         late_only: filters.lateOnly ? 1 : 0,
+        review_only: filters.reviewOnly ? 1 : 0,
         sort: filters.sort,
         direction: filters.direction,
     };
@@ -600,11 +678,7 @@ function formatDateTime(value) {
 }
 
 function scheduleLabel(record) {
-    if (!record.schedule_label && !record.shift_label) {
-        return "-";
-    }
-
-    return [record.schedule_label, record.shift_label].filter(Boolean).join(" · ");
+    return record.schedule_label || "-";
 }
 
 function statusSeverity(status) {
@@ -631,126 +705,23 @@ function statusSeverity(status) {
                 eyebrow="Daily operations"
             >
                 <template #actions>
-                    <Button label="Scan Anomali" icon="pi pi-search" severity="warn" outlined @click="openAnomalyScan" />
-                    <Button label="Hapus Harian" icon="pi pi-trash" severity="danger" outlined @click="deleteAttendanceDay" />
-                    <Button label="Import Excel" icon="pi pi-file-excel" severity="secondary" outlined @click="scrollToImport" />
-                    <Button label="Tambah Absensi" icon="pi pi-plus" severity="danger" @click="openCreate" />
+                    <div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
+                        <Button label="Pedoman Jadwal Kerja" icon="pi pi-book" severity="secondary" outlined class="w-full sm:w-auto" @click="openGuideDialog" />
+                        <Button label="Scan Anomali" icon="pi pi-search" severity="warn" outlined class="w-full sm:w-auto" @click="openAnomalyScan" />
+                        <Button label="Hapus Harian" icon="pi pi-trash" severity="danger" outlined class="w-full sm:w-auto" @click="deleteAttendanceDay" />
+                        <Button label="Tambah Absensi" icon="pi pi-plus" severity="secondary" outlined class="w-full sm:w-auto" @click="openCreate" />
+                        <Button label="Import Excel" icon="pi pi-file-excel" severity="danger" class="col-span-2 w-full sm:col-span-1 sm:w-auto" @click="openImportDialog()" />
+                    </div>
                 </template>
             </PageHeader>
 
-            <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <div class="grid grid-cols-2 gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-5">
                 <StatCard label="Hadir" :value="stats.present.toLocaleString('id-ID')" description="Hadir dan remote" icon="pi pi-check-circle" tone="emerald" />
                 <StatCard label="Terlambat" :value="stats.late.toLocaleString('id-ID')" description="Perlu perhatian" icon="pi pi-clock" tone="amber" />
                 <StatCard label="Punch belum lengkap" :value="stats.incomplete.toLocaleString('id-ID')" description="Perlu koreksi absensi" icon="pi pi-exclamation-circle" tone="rose" />
                 <StatCard label="Cuti / Sakit" :value="stats.leave.toLocaleString('id-ID')" description="Ketidakhadiran terencana" icon="pi pi-calendar" tone="sky" />
-                <StatCard label="Lembur" :value="`${stats.overtimeHours} jam`" description="Total periode terpilih" icon="pi pi-hourglass" tone="violet" />
+                <StatCard class="col-span-2 sm:col-span-1" label="Lembur" :value="`${stats.overtimeHours} jam`" description="Total periode terpilih" icon="pi pi-hourglass" tone="violet" />
             </div>
-
-            <Card id="attendance-import" class="scroll-mt-24 border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
-                <template #title>
-                    <div class="px-1">
-                        <h2 class="text-base font-bold text-slate-950 dark:text-white">Import rekap absensi Excel</h2>
-                        <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">
-                            Upload format Attendance Logs satu hari. NIP dicocokkan ke data karyawan; ID tanpa punch dilewati.
-                        </p>
-                    </div>
-                </template>
-                <template #content>
-                    <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
-                        <form class="space-y-4" @submit.prevent="uploadAttendance">
-                            <div>
-                                <label for="attendance-file" class="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-100">
-                                    File rekap Attendance Logs
-                                </label>
-                                <input
-                                    id="attendance-file"
-                                    :key="fileInputKey"
-                                    type="file"
-                                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                    aria-describedby="attendance-file-guidance"
-                                    class="block w-full cursor-pointer rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-600 file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-red-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:border-red-400 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-300"
-                                    @change="chooseUploadFile"
-                                />
-                                <p id="attendance-file-guidance" class="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                                    Maksimal 5 MB. Double/triple punch dalam waktu berdekatan hanya disimpan sekali; slot masuk dan keluar menggunakan punch efektif pertama.
-                                </p>
-                                <p v-if="uploadForm.errors.attendance_file" class="mt-2 text-xs font-medium text-red-600 dark:text-red-400">
-                                    {{ uploadForm.errors.attendance_file }}
-                                </p>
-                            </div>
-
-                            <ProgressBar v-if="uploadForm.progress" :value="uploadProgress" :show-value="false" class="h-2" />
-
-                            <div class="flex flex-wrap items-center gap-3">
-                                <Button
-                                    type="submit"
-                                    label="Import dan bandingkan"
-                                    icon="pi pi-upload"
-                                    severity="danger"
-                                    :loading="uploadForm.processing"
-                                    :disabled="!uploadForm.attendance_file"
-                                />
-                                <span class="text-xs text-slate-500 dark:text-slate-400">
-                                    Detail nama dan department diambil dari tabel karyawan, bukan dari kolom Excel.
-                                </span>
-                            </div>
-                        </form>
-
-                        <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40">
-                            <div v-if="latestImport">
-                                <div class="flex items-start justify-between gap-3">
-                                    <div>
-                                        <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Import terakhir</p>
-                                        <p class="mt-1 font-semibold text-slate-900 dark:text-white">{{ latestImport.filename }}</p>
-                                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                                            {{ formatDate(latestImport.attendance_date) }} · {{ formatDateTime(latestImport.imported_at) }}
-                                        </p>
-                                    </div>
-                                    <Tag :severity="latestImport.unmatched_employee_count || latestImport.missing_punch_count ? 'warn' : 'success'">
-                                        {{ latestImport.unmatched_employee_count || latestImport.missing_punch_count ? "Perlu dicek" : "Selesai" }}
-                                    </Tag>
-                                </div>
-                                <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
-                                    <div>
-                                        <p class="text-xs text-slate-500">Diproses</p>
-                                        <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.processed_employee_count.toLocaleString("id-ID") }}</p>
-                                    </div>
-                                    <div>
-                                        <p class="text-xs text-slate-500">Tanpa punch</p>
-                                        <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.skipped_without_punch_count.toLocaleString("id-ID") }}</p>
-                                    </div>
-                                    <div>
-                                        <p class="text-xs text-slate-500">NIP tidak cocok</p>
-                                        <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.unmatched_employee_count.toLocaleString("id-ID") }}</p>
-                                    </div>
-                                    <div>
-                                        <p class="text-xs text-slate-500">Missed punch</p>
-                                        <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.missing_punch_count.toLocaleString("id-ID") }}</p>
-                                    </div>
-                                </div>
-                                <div v-if="latestImport.unmatched_user_ids.length" class="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
-                                    NIP tidak ditemukan:
-                                    <span class="font-mono">{{ latestImport.unmatched_user_ids.join(", ") }}</span>
-                                </div>
-                            </div>
-                            <EmptyState
-                                v-else
-                                title="Belum ada import"
-                                description="Upload file Excel untuk mulai menyimpan rekap absensi."
-                                icon="pi pi-file-excel"
-                            />
-
-                            <div v-if="recentImports.length > 1" class="mt-4 space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
-                                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Riwayat singkat</p>
-                                <div v-for="item in recentImports.slice(1)" :key="item.id" class="flex items-center justify-between gap-3 text-xs">
-                                    <span class="truncate text-slate-600 dark:text-slate-300">{{ formatDate(item.attendance_date) }} · {{ item.filename }}</span>
-                                    <span class="shrink-0 text-slate-400">{{ item.processed_employee_count }} karyawan</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </template>
-            </Card>
 
             <Card class="border border-slate-200/80 bg-white dark:border-slate-800 dark:bg-slate-900">
                 <template #title>
@@ -760,32 +731,63 @@ function statusSeverity(status) {
                             <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">
                                 Pilih tanggal langsung atau gunakan tombol sebelumnya dan berikutnya.
                             </p>
+                            <p v-if="!filtersExpanded" class="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                                {{ activeFilterCount ? `${activeFilterCount} filter aktif` : "Filter disembunyikan" }}
+                            </p>
                         </div>
-                        <div class="flex flex-wrap items-center gap-2">
-                            <Button icon="pi pi-chevron-left" aria-label="Tanggal sebelumnya" severity="secondary" outlined @click="changeDate(-1)" />
-                            <InputText v-model="filters.date" type="date" class="h-11 w-44" @change="load" />
-                            <Button icon="pi pi-chevron-right" aria-label="Tanggal berikutnya" severity="secondary" outlined @click="changeDate(1)" />
-                            <Button label="Hari ini" severity="secondary" text @click="goToToday" />
+                        <div class="grid w-full grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 sm:flex sm:w-auto sm:flex-wrap">
+                            <Button
+                                :label="filtersExpanded
+                                    ? 'Tutup filter'
+                                    : activeFilterCount
+                                        ? `Filter (${activeFilterCount})`
+                                        : 'Tampilkan filter'"
+                                :icon="filtersExpanded ? 'pi pi-chevron-up' : 'pi pi-filter'"
+                                severity="secondary"
+                                outlined
+                                class="col-span-3 w-full justify-center sm:col-span-1 sm:w-auto"
+                                @click="toggleFilters"
+                            />
+                            <Button icon="pi pi-chevron-left" aria-label="Tanggal sebelumnya" severity="secondary" outlined class="w-full sm:w-auto" @click="changeDate(-1)" />
+                            <InputText v-model="filters.date" type="date" class="h-11 w-full sm:w-44" @change="load" />
+                            <Button icon="pi pi-chevron-right" aria-label="Tanggal berikutnya" severity="secondary" outlined class="w-full sm:w-auto" @click="changeDate(1)" />
+                            <Button label="Hari ini" severity="secondary" text class="col-span-3 w-full justify-center sm:col-span-1 sm:w-auto" @click="goToToday" />
                         </div>
                     </div>
                 </template>
                 <template #content>
-                    <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                        <div class="relative">
-                            <InputText v-model="filters.search" placeholder="Cari karyawan..." class="h-11 w-full pr-10" @change="load" />
-                            <Button v-if="filters.search" icon="pi pi-times" text rounded severity="secondary" class="absolute right-1 top-1/2 -translate-y-1/2" aria-label="Hapus pencarian" @click="clearSearch" />
+                    <Transition
+                        enter-active-class="transition duration-150 ease-out"
+                        enter-from-class="-translate-y-1 opacity-0"
+                        enter-to-class="translate-y-0 opacity-100"
+                        leave-active-class="transition duration-100 ease-in"
+                        leave-from-class="translate-y-0 opacity-100"
+                        leave-to-class="-translate-y-1 opacity-0"
+                    >
+                        <div v-if="filtersExpanded" class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            <div class="relative">
+                                <InputText v-model="filters.search" placeholder="Cari karyawan..." class="h-11 w-full pr-10" @change="load" />
+                                <Button v-if="filters.search" icon="pi pi-times" text rounded severity="secondary" class="absolute right-1 top-1/2 -translate-y-1/2" aria-label="Hapus pencarian" @click="clearSearch" />
+                            </div>
+                            <Select v-model="filters.companyId" :options="options.companies" option-label="label" option-value="value" placeholder="Semua company" filter show-clear class="h-11" @update:model-value="changeCompany" />
+                            <Select v-model="filters.directorateId" :options="options.directorates" option-label="label" option-value="value" placeholder="Semua directorate" filter show-clear class="h-11" @update:model-value="changeDirectorate" />
+                            <Select v-model="filters.departmentId" :options="options.departments" option-label="label" option-value="value" placeholder="Semua department" filter show-clear class="h-11" @update:model-value="changeDepartment" />
+                            <Select v-model="filters.jabatanId" :options="options.jabatans" option-label="label" option-value="value" placeholder="Semua jabatan" filter show-clear class="h-11" @update:model-value="load" />
+                            <Select v-model="filters.status" :options="options.statuses" option-label="label" option-value="value" placeholder="Semua status" show-clear class="h-11" @update:model-value="load" />
+                            <Select v-model="filters.shift" :options="options.shifts" option-label="label" option-value="value" placeholder="Semua shift" show-clear class="h-11" @update:model-value="load" />
+                            <div class="grid grid-cols-1 gap-2 md:col-span-2 md:flex md:h-11 md:items-center xl:col-span-2">
+                                <label class="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200 md:h-11 md:flex-1">
+                                    <Checkbox v-model="filters.lateOnly" binary @update:model-value="load" />
+                                    <span class="truncate">Terlambat saja</span>
+                                </label>
+                                <label class="flex min-h-11 min-w-0 items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200 md:h-11 md:flex-1">
+                                    <Checkbox v-model="filters.reviewOnly" binary @update:model-value="load" />
+                                    <span class="truncate">Review hari ini</span>
+                                </label>
+                                <Button label="Clear Filter" icon="pi pi-times" severity="secondary" outlined class="h-11 w-full justify-center md:w-auto md:shrink-0" @click="clearFilters" />
+                            </div>
                         </div>
-                        <Select v-model="filters.companyId" :options="options.companies" option-label="label" option-value="value" placeholder="Semua company" filter show-clear class="h-11" @update:model-value="changeCompany" />
-                        <Select v-model="filters.directorateId" :options="options.directorates" option-label="label" option-value="value" placeholder="Semua directorate" filter show-clear class="h-11" @update:model-value="changeDirectorate" />
-                        <Select v-model="filters.departmentId" :options="options.departments" option-label="label" option-value="value" placeholder="Semua department" filter show-clear class="h-11" @update:model-value="changeDepartment" />
-                        <Select v-model="filters.jabatanId" :options="options.jabatans" option-label="label" option-value="value" placeholder="Semua jabatan" filter show-clear class="h-11" @change="load" />
-                        <Select v-model="filters.status" :options="options.statuses" option-label="label" option-value="value" placeholder="Semua status" show-clear class="h-11" @change="load" />
-                        <label class="flex h-11 items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
-                            <Checkbox v-model="filters.lateOnly" binary @change="load" />
-                            Terlambat saja
-                        </label>
-                        <Button label="Terapkan" icon="pi pi-filter" severity="secondary" outlined @click="load" />
-                    </div>
+                    </Transition>
                 </template>
             </Card>
 
@@ -805,7 +807,7 @@ function statusSeverity(status) {
                             </div>
                             <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">{{ records.total.toLocaleString("id-ID") }} catatan ditemukan</p>
                         </div>
-                        <label class="flex items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
+                        <label class="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-500 dark:text-slate-400 sm:w-auto sm:justify-start">
                             Baris per halaman
                             <Select
                                 v-model="filters.perPage"
@@ -822,13 +824,244 @@ function statusSeverity(status) {
                     </Message>
                     <Message v-if="deletedPunch" severity="info" :closable="false" class="mb-3">
                         <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <span>{{ deletedPunch.label }} berhasil dihapus. Perhitungan absensi sudah diperbarui.</span>
+                            <span>{{ deletedPunch.label }} dihapus dari form. Klik Simpan untuk menerapkan perubahan.</span>
                             <Button label="Undo" icon="pi pi-undo" size="small" text severity="info" :disabled="inlineForm.processing" @click="undoPunchDelete" />
                         </div>
                     </Message>
+
+                    <div class="space-y-3 sm:hidden">
+                        <div v-if="loading" class="space-y-3" aria-label="Memuat daftar absensi">
+                            <div v-for="index in 3" :key="index" class="animate-pulse rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div class="flex-1 space-y-2">
+                                        <div class="h-3 w-24 rounded bg-slate-200 dark:bg-slate-700" />
+                                        <div class="h-4 w-40 rounded bg-slate-200 dark:bg-slate-700" />
+                                        <div class="h-3 w-32 rounded bg-slate-100 dark:bg-slate-800" />
+                                    </div>
+                                    <div class="h-9 w-9 rounded-lg bg-slate-100 dark:bg-slate-800" />
+                                </div>
+                                <div class="mt-4 grid grid-cols-2 gap-2">
+                                    <div v-for="field in 4" :key="field" class="h-12 rounded-lg bg-slate-100 dark:bg-slate-800" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <template v-else-if="records.data.length">
+                            <article
+                                v-for="record in records.data"
+                                :key="`mobile-${record.id}`"
+                                class="overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+                            >
+                                <div class="border-b border-slate-100 p-4 dark:border-slate-800">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <p class="font-mono text-[11px] font-semibold tracking-wide text-slate-500 dark:text-slate-400">
+                                                {{ record.employee.nip }}
+                                            </p>
+                                            <p class="mt-1 truncate font-semibold text-slate-950 dark:text-white">
+                                                {{ record.employee.name }}
+                                            </p>
+                                            <p class="mt-1 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                                                {{ record.employee.department || "-" }} ·
+                                                {{ record.employee.position || "-" }}
+                                            </p>
+                                        </div>
+                                        <Button
+                                            icon="pi pi-pencil"
+                                            text
+                                            rounded
+                                            severity="secondary"
+                                            aria-label="Edit absensi"
+                                            title="Edit absensi"
+                                            @click="openEdit(record)"
+                                        />
+                                    </div>
+
+                                    <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                                        <Tag
+                                            v-if="record.status === 'present' && !record.requires_review"
+                                            severity="success"
+                                            icon="pi pi-check-circle"
+                                        >
+                                            Hadir
+                                        </Tag>
+                                        <span
+                                            v-else-if="record.status === 'late'"
+                                            class="inline-flex items-center gap-1 rounded-md bg-yellow-100 px-2 py-1 text-[11px] font-semibold text-yellow-950 ring-1 ring-yellow-300 dark:bg-yellow-400/15 dark:text-yellow-100 dark:ring-yellow-400/30"
+                                        >
+                                            <i class="pi pi-clock text-[11px]" />
+                                            Terlambat
+                                        </span>
+                                        <Tag
+                                            v-else-if="record.status !== 'present'"
+                                            :severity="statusSeverity(record.status)"
+                                            :icon="record.status === 'absent' ? 'pi pi-times-circle' : undefined"
+                                        >
+                                            {{ record.status_label }}
+                                        </Tag>
+                                        <Tag v-if="record.requires_review" severity="danger" icon="pi pi-exclamation-triangle">
+                                            Perlu review
+                                        </Tag>
+                                        <Tag
+                                            v-if="record.review_resolved_at && !record.requires_review"
+                                            severity="success"
+                                            icon="pi pi-check"
+                                        >
+                                            Done review
+                                        </Tag>
+                                    </div>
+                                </div>
+
+                                <div class="space-y-4 p-4">
+                                    <div>
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span
+                                                class="inline-flex rounded-md px-2 py-1 text-[11px] font-semibold"
+                                                :class="record.shift === 'night'
+                                                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300'
+                                                    : record.shift === 'day'
+                                                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                                        : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'"
+                                            >
+                                                {{ scheduleLabel(record) }}
+                                            </span>
+                                            <span v-if="record.expected_check_in || record.expected_check_out" class="text-[11px] text-slate-500 dark:text-slate-400">
+                                                {{ record.expected_check_in || "-" }}–{{ record.expected_check_out || "-" }}
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <div
+                                            v-for="punch in punchColumns"
+                                            :key="`mobile-${record.id}-${punch.field}`"
+                                            class="rounded-lg border border-slate-100 bg-slate-50/80 px-2.5 py-2 dark:border-slate-800 dark:bg-slate-950/40"
+                                        >
+                                            <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                                {{ punch.label }}
+                                            </p>
+                                            <p
+                                                class="mt-0.5 font-mono text-xs font-semibold"
+                                                :class="(record.late_fields || []).includes(punch.field)
+                                                    ? 'rounded bg-orange-100 px-1 text-orange-800 dark:bg-orange-500/15 dark:text-orange-200'
+                                                    : 'text-slate-800 dark:text-slate-100'"
+                                            >
+                                                {{ record[punch.field] || "—" }}
+                                                <span
+                                                    v-if="record[punch.field] && record[`${punch.field}_day_offset`]"
+                                                    class="ml-1 text-[9px] font-medium text-slate-400"
+                                                >
+                                                    +{{ record[`${punch.field}_day_offset`] }}d
+                                                </span>
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-3 gap-2 text-center">
+                                        <div class="rounded-xl bg-slate-50 px-2 py-2 dark:bg-slate-950/40">
+                                            <p class="text-[10px] font-medium text-slate-400">Jam kerja</p>
+                                            <p class="mt-1 text-sm font-bold text-slate-900 dark:text-white">{{ record.worked_hours }}</p>
+                                        </div>
+                                        <div class="rounded-xl bg-slate-50 px-2 py-2 dark:bg-slate-950/40">
+                                            <p class="text-[10px] font-medium text-slate-400">Lembur</p>
+                                            <p class="mt-1 text-sm font-bold text-slate-900 dark:text-white">{{ record.overtime_hours }}</p>
+                                        </div>
+                                        <div class="rounded-xl bg-slate-50 px-2 py-2 dark:bg-slate-950/40">
+                                            <p class="text-[10px] font-medium text-slate-400">Selisih</p>
+                                            <p class="mt-1 text-sm font-bold text-slate-900 dark:text-white">
+                                                {{ record.late_minutes ? `${record.late_minutes}m` : record.early_leave_minutes ? `${record.early_leave_minutes}m` : "—" }}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div class="flex flex-wrap items-center gap-1">
+                                        <Tag severity="secondary" class="attendance-compact-tag">{{ record.raw_punch_count }} raw</Tag>
+                                        <Tag v-if="record.has_missing_punch" severity="danger" icon="pi pi-exclamation-circle" class="attendance-compact-tag">Missed</Tag>
+                                        <Tag v-if="record.has_duplicate_punch" severity="secondary" icon="pi pi-copy" class="attendance-compact-tag">{{ record.duplicate_punch_count }} ganda</Tag>
+                                    </div>
+
+                                    <p v-if="record.review_resolved_at && !record.requires_review" class="text-[11px] leading-5 text-emerald-700 dark:text-emerald-300">
+                                        Reviewed by {{ record.review_resolved_by || "-" }} · {{ formatDateTime(record.review_resolved_at) }}
+                                    </p>
+
+                                    <div>
+                                        <Button
+                                            :label="notesVisible ? 'Sembunyikan catatan' : 'Tampilkan catatan'"
+                                            :icon="notesVisible ? 'pi pi-eye-slash' : 'pi pi-eye'"
+                                            size="small"
+                                            text
+                                            severity="secondary"
+                                            class="-ml-2"
+                                            @click="toggleNotes"
+                                        />
+                                        <p v-if="notesVisible" class="mt-1 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600 dark:bg-slate-950/40 dark:text-slate-300">
+                                            {{ record.comparison_notes || record.notes || "Belum ada catatan." }}
+                                        </p>
+                                    </div>
+
+                                    <div
+                                        v-if="record.requires_review || record.review_resolved_at || record.has_attendance"
+                                        class="flex items-center justify-end gap-1 border-t border-slate-100 pt-3 dark:border-slate-800"
+                                    >
+                                        <Button
+                                            v-if="record.requires_review"
+                                            icon="pi pi-check"
+                                            size="small"
+                                            text
+                                            rounded
+                                            severity="success"
+                                            aria-label="Done review"
+                                            title="Done review"
+                                            @click="resolveReview(record)"
+                                        />
+                                        <Button
+                                            v-if="record.requires_review || record.review_resolved_at"
+                                            icon="pi pi-times"
+                                            size="small"
+                                            text
+                                            rounded
+                                            severity="danger"
+                                            aria-label="Hapus review"
+                                            title="Hapus review"
+                                            @click="deleteReview(record)"
+                                        />
+                                        <Button
+                                            v-if="record.has_attendance"
+                                            icon="pi pi-trash"
+                                            text
+                                            rounded
+                                            severity="danger"
+                                            aria-label="Hapus absensi"
+                                            title="Hapus absensi"
+                                            @click="removeRecord(record)"
+                                        />
+                                    </div>
+                                </div>
+                            </article>
+
+                            <Paginator
+                                :first="(records.current_page - 1) * records.per_page"
+                                :rows="records.per_page"
+                                :total-records="records.total"
+                                template="PrevPage, Page, NextPage"
+                                class="attendance-mobile-paginator"
+                                @page="onPage"
+                            />
+                        </template>
+
+                        <EmptyState
+                            v-else
+                            title="Belum ada absensi"
+                            description="Tambahkan absensi pertama atau ubah periode filter."
+                            icon="pi pi-calendar-plus"
+                        />
+                    </div>
+
                     <DataTable
                         :value="records.data"
                         :loading="loading"
+                        size="small"
+                        class="attendance-table hidden sm:block"
                         :paginator="true"
                         :rows="records.per_page"
                         :total-records="records.total"
@@ -865,39 +1098,64 @@ function statusSeverity(status) {
                         </Column>
                         <Column field="status" header="Status" sortable style="min-width: 190px">
                             <template #body="{ data }">
-                                <Select
-                                    v-if="isInlineEditing(data)"
-                                    v-model="inlineForm.status"
-                                    :options="editableStatuses"
-                                    option-label="label"
-                                    option-value="value"
-                                    class="w-36"
-                                    :invalid="Boolean(inlineForm.errors.status)"
-                                />
-                                <div v-else class="flex flex-wrap gap-1">
-                                    <Tag :severity="statusSeverity(data.status)">{{ data.status_label }}</Tag>
-                                    <Tag v-if="data.requires_review" severity="warn" icon="pi pi-exclamation-triangle">Review</Tag>
-                                    <Button
-                                        v-if="data.requires_review"
-                                        label="Hapus review"
-                                        icon="pi pi-check"
-                                        size="small"
-                                        text
-                                        severity="warning"
-                                        @click="clearReview(data)"
-                                    />
-                                    <p
-                                        v-if="data.review_resolved_by"
-                                        class="basis-full text-xs text-slate-500 dark:text-slate-400"
+                                <div class="flex flex-wrap gap-1">
+                                    <span
+                                        v-if="data.status === 'present' && !data.requires_review"
+                                        class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                                        title="Hadir"
+                                        aria-label="Hadir"
                                     >
-                                        Review dihapus oleh {{ data.review_resolved_by }}
+                                        <i class="pi pi-check-circle text-[12px]" />
+                                    </span>
+                                    <span
+                                        v-else-if="data.status === 'late'"
+                                        class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-yellow-100 text-yellow-950 ring-1 ring-yellow-300 dark:bg-yellow-400/15 dark:text-yellow-100 dark:ring-yellow-400/30"
+                                        title="Terlambat"
+                                        aria-label="Terlambat"
+                                    >
+                                        <i class="pi pi-clock text-[12px]" />
+                                    </span>
+                                    <Tag v-else-if="data.status !== 'present'" :severity="statusSeverity(data.status)">{{ data.status_label }}</Tag>
+                                    <span
+                                        v-if="data.requires_review"
+                                        class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-red-100 text-red-700 ring-1 ring-red-200 dark:bg-red-500/15 dark:text-red-300 dark:ring-red-500/30"
+                                        title="Perlu review"
+                                        aria-label="Perlu review"
+                                    >
+                                        <i class="pi pi-exclamation-triangle text-[12px]" />
+                                    </span>
+                                    <span
+                                        v-if="data.review_resolved_at && !data.requires_review"
+                                        class="inline-flex h-7 w-7 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                                        title="Done review"
+                                        aria-label="Done review"
+                                    >
+                                        <i class="pi pi-check text-[12px]" />
+                                    </span>
+                                    <p
+                                        v-if="data.review_resolved_at && !data.requires_review"
+                                        class="basis-full text-xs font-medium text-emerald-700 dark:text-emerald-300"
+                                    >
+                                        Reviewed by
+                                        <template v-if="data.review_resolved_by">{{ data.review_resolved_by }}</template>
+                                        · {{ formatDateTime(data.review_resolved_at) }}
                                     </p>
                                 </div>
                             </template>
                         </Column>
                         <Column field="schedule_profile" header="Jadwal" sortable style="min-width: 180px">
                             <template #body="{ data }">
-                                <p class="font-medium text-slate-800 dark:text-slate-100">{{ scheduleLabel(data) }}</p>
+                                <span
+                                    class="inline-flex rounded-md px-2 py-0.5 text-xs font-semibold"
+                                    :class="data.shift === 'night'
+                                        ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300'
+                                        : data.shift === 'day'
+                                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+                                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'"
+                                    :title="data.shift === 'night' ? 'Shift malam' : data.shift === 'day' ? 'Shift pagi' : null"
+                                >
+                                    {{ scheduleLabel(data) }}
+                                </span>
                                 <p v-if="data.expected_check_in || data.expected_check_out" class="mt-1 text-xs text-slate-500">
                                     {{ data.expected_check_in || "-" }} → {{ data.expected_check_out || "-" }}
                                 </p>
@@ -929,6 +1187,7 @@ function statusSeverity(status) {
                                     :invalid="Boolean(inlineForm.errors[punch.field])"
                                     :disabled="inlineForm.processing"
                                     :drop-active="isPunchDropTarget(data, punch.field)"
+                                    :late="(data.late_fields || []).includes(punch.field)"
                                     @update:model-value="inlineForm[punch.field] = $event"
                                     @drag-start="startPunchDrag(data, punch.field, $event)"
                                     @drag-over="onPunchDragOver(data, punch.field, $event)"
@@ -941,11 +1200,11 @@ function statusSeverity(status) {
                         <Column field="has_missing_punch" header="Punch" sortable style="min-width: 220px">
                             <template #body="{ data }">
                                 <div class="flex flex-wrap items-center gap-1">
-                                    <Tag severity="secondary">{{ data.raw_punch_count }} raw</Tag>
-                                    <Tag v-if="data.effective_punch_count" severity="info">{{ data.effective_punch_count }} efektif</Tag>
-                                    <Tag v-if="data.has_duplicate_punch" severity="secondary" icon="pi pi-copy">{{ data.duplicate_punch_count }} ganda</Tag>
-                                    <Tag v-if="data.has_missing_punch" severity="danger" icon="pi pi-exclamation-circle">Missed</Tag>
-                                    <Tag v-if="data.ignored_punch_count" severity="secondary">{{ data.ignored_punch_count }} diabaikan</Tag>
+                                    <Tag severity="secondary" class="attendance-compact-tag">{{ data.raw_punch_count }} raw</Tag>
+                                    <Tag v-if="data.effective_punch_count" severity="info" class="attendance-compact-tag">{{ data.effective_punch_count }} efektif</Tag>
+                                    <Tag v-if="data.has_duplicate_punch" severity="secondary" icon="pi pi-copy" class="attendance-compact-tag">{{ data.duplicate_punch_count }} ganda</Tag>
+                                    <Tag v-if="data.has_missing_punch" severity="danger" icon="pi pi-exclamation-circle" class="attendance-compact-tag">Missed</Tag>
+                                    <Tag v-if="data.ignored_punch_count" severity="secondary" class="attendance-compact-tag">{{ data.ignored_punch_count }} diabaikan</Tag>
                                 </div>
                             </template>
                         </Column>
@@ -970,11 +1229,11 @@ function statusSeverity(status) {
                         <Column field="late_minutes" header="Selisih" sortable style="min-width: 170px">
                             <template #body="{ data }">
                                 <div class="space-y-1">
-                                    <Tag v-if="data.late_minutes" severity="warn">
+                                    <Tag v-if="data.late_minutes" severity="warn" class="attendance-compact-tag">
                                         Terlambat {{ data.late_minutes }}m
                                         <template v-if="data.late_penalty_hours"> · potong {{ data.late_penalty_hours }} jam</template>
                                     </Tag>
-                                    <Tag v-if="data.early_leave_minutes" severity="danger">
+                                    <Tag v-if="data.early_leave_minutes" severity="danger" class="attendance-compact-tag">
                                         Pulang awal {{ data.early_leave_minutes }}m
                                     </Tag>
                                     <span v-if="!data.late_minutes && !data.early_leave_minutes" class="text-xs text-slate-400">Dalam jadwal</span>
@@ -993,16 +1252,78 @@ function statusSeverity(status) {
                         <Column field="holiday_overtime_hours" header="Lembur Libur x2" sortable style="min-width: 135px">
                             <template #body="{ data }">{{ data.holiday_overtime_hours }} jam</template>
                         </Column>
-                        <Column field="notes" header="Catatan" sortable style="min-width: 260px">
+                        <Column
+                            field="notes"
+                            sortable
+                            :style="{ minWidth: notesVisible ? '260px' : '110px' }"
+                        >
+                            <template #header>
+                                <div class="flex items-center justify-center gap-1">
+                                    <span>Catatan</span>
+                                    <Button
+                                        :icon="notesVisible ? 'pi pi-eye-slash' : 'pi pi-eye'"
+                                        text
+                                        rounded
+                                        size="small"
+                                        severity="secondary"
+                                        class="!h-6 !w-6 !min-h-6 !p-0"
+                                        :aria-label="notesVisible ? 'Sembunyikan catatan' : 'Tampilkan catatan'"
+                                        :title="notesVisible ? 'Sembunyikan catatan' : 'Tampilkan catatan'"
+                                        @click.stop="toggleNotes"
+                                    />
+                                </div>
+                            </template>
                             <template #body="{ data }">
-                                <p class="text-xs leading-5 text-slate-600 dark:text-slate-300">{{ data.comparison_notes || data.notes || "-" }}</p>
+                                <p v-if="notesVisible" class="line-clamp-2 whitespace-normal break-words text-xs leading-4 text-slate-600 dark:text-slate-300" :title="data.comparison_notes || data.notes || '-'">
+                                    {{ data.comparison_notes || data.notes || "-" }}
+                                </p>
+                                <span v-else class="block text-center text-xs text-slate-400">—</span>
                             </template>
                         </Column>
-                        <Column header="Aksi" style="width: 100px">
+                        <Column
+                            header="Aksi"
+                            frozen
+                            align-frozen="right"
+                            style="min-width: 140px"
+                        >
                             <template #body="{ data }">
-                                <div class="flex justify-end gap-1">
-                                    <Button v-if="data.has_attendance" icon="pi pi-trash" text rounded severity="danger" aria-label="Hapus" @click="removeRecord(data)" />
+                                <div
+                                    v-if="!isInlineEditing(data)"
+                                    class="flex flex-wrap items-center justify-end gap-1 rounded-lg bg-white px-1 py-1 dark:bg-slate-900"
+                                >
+                                    <Button
+                                        v-if="data.requires_review"
+                                        icon="pi pi-check"
+                                        size="small"
+                                        text
+                                        rounded
+                                        severity="success"
+                                        aria-label="Done review"
+                                        title="Done review"
+                                        @click="resolveReview(data)"
+                                    />
+                                    <Button
+                                        v-if="data.requires_review || data.review_resolved_at"
+                                        icon="pi pi-times"
+                                        size="small"
+                                        text
+                                        rounded
+                                        severity="danger"
+                                        aria-label="Hapus review"
+                                        title="Hapus review"
+                                        @click="deleteReview(data)"
+                                    />
+                                    <Button
+                                        v-if="data.has_attendance"
+                                        icon="pi pi-trash"
+                                        text
+                                        rounded
+                                        severity="danger"
+                                        aria-label="Hapus absensi"
+                                        @click="removeRecord(data)"
+                                    />
                                 </div>
+                                <p v-else class="text-right text-xs font-medium text-slate-400">Selesaikan edit untuk melihat aksi</p>
                             </template>
                         </Column>
                     </DataTable>
@@ -1010,7 +1331,7 @@ function statusSeverity(status) {
             </Card>
         </div>
 
-        <Dialog v-model:visible="dialogVisible" :header="editingRecord ? 'Edit absensi' : 'Tambah absensi'" modal class="w-full max-w-xl">
+        <Dialog v-model:visible="dialogVisible" :header="editingRecord ? 'Edit absensi' : 'Tambah absensi'" modal class="attendance-responsive-dialog w-full max-w-xl">
             <form class="space-y-4" @submit.prevent="save">
                 <FormField label="Karyawan" :error="form.errors.karyawan_id" required>
                     <EmployeeAutocomplete v-model="form.employee" />
@@ -1035,11 +1356,316 @@ function statusSeverity(status) {
                         <Textarea v-model="form.notes" rows="3" class="w-full" />
                     </FormField>
                 </div>
-                <div class="flex justify-end gap-2 pt-2">
-                    <Button type="button" label="Batal" severity="secondary" text @click="dialogVisible = false" />
-                    <Button type="submit" label="Simpan absensi" icon="pi pi-check" severity="danger" :loading="form.processing" />
+                <div class="grid grid-cols-2 gap-2 pt-2 sm:flex sm:justify-end">
+                    <Button type="button" label="Batal" severity="secondary" text class="w-full sm:w-auto" @click="dialogVisible = false" />
+                    <Button type="submit" label="Simpan absensi" icon="pi pi-check" severity="danger" class="w-full sm:w-auto" :loading="form.processing" />
                 </div>
             </form>
+        </Dialog>
+
+        <Dialog
+            v-model:visible="guideDialogVisible"
+            header="Pedoman jam kerja & jadwal khusus"
+            modal
+            :style="{ width: 'min(96vw, 1280px)' }"
+            :breakpoints="{ '960px': '96vw' }"
+            class="attendance-responsive-dialog"
+        >
+            <div class="max-h-[calc(100dvh-8rem)] space-y-5 overflow-y-auto pr-1 sm:max-h-[74vh]">
+                <div class="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-700 dark:bg-slate-950/40 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <p class="text-sm font-semibold text-slate-900 dark:text-white">
+                            Pedoman lengkap jadwal reguler dan periode khusus
+                        </p>
+                        <p class="mt-1 max-w-3xl text-xs leading-5 text-slate-500 dark:text-slate-400">
+                            File Excel memuat ketentuan lengkap pada tab Ketentuan. Perubahan jadwal Ramadan dilakukan
+                            developer pada bagian Jadwal Perubahan / Ramadan di tab Jadwal Kerja.
+                        </p>
+                    </div>
+                    <Button
+                        label="Download Pedoman Jadwal Kerja Excel"
+                        icon="pi pi-download"
+                        severity="secondary"
+                        outlined
+                        class="w-full sm:w-auto"
+                        :disabled="!scheduleGuide.downloadAvailable"
+                        @click="downloadScheduleGuide"
+                    />
+                </div>
+
+                <Message v-if="!scheduleGuide.downloadAvailable" severity="warn" :closable="false">
+                    File pedoman belum tersedia di server.
+                </Message>
+
+                <SelectButton
+                    v-model="guideSection"
+                    :options="guideSections"
+                    option-label="label"
+                    option-value="value"
+                    :allow-empty="false"
+                    class="w-full"
+                />
+
+                <template v-if="guideSection === 'reguler'">
+                    <div class="space-y-4">
+                        <section
+                            v-for="profile in scheduleGuide.profiles"
+                            :key="profile.key"
+                            class="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800"
+                        >
+                            <div class="flex flex-col gap-2 bg-slate-900 px-4 py-3 text-white sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <h3 class="text-sm font-bold">{{ profile.label }}</h3>
+                                    <p v-if="profile.notice" class="mt-1 text-xs leading-5 text-slate-300">{{ profile.notice }}</p>
+                                </div>
+                                <Tag v-if="profile.review_required" severity="warn">Perlu review</Tag>
+                                <Tag v-else severity="success">Jadwal tetap</Tag>
+                            </div>
+
+                            <div class="space-y-3 bg-slate-50/70 p-3 dark:bg-slate-950/30">
+                                <div
+                                    v-for="day in profile.days"
+                                    :key="`${profile.key}-${day.key}`"
+                                    class="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+                                >
+                                    <div class="border-b border-slate-200 bg-slate-100/80 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/60">
+                                        <p class="text-sm font-bold text-slate-900 dark:text-white">{{ day.label }}</p>
+                                    </div>
+                                    <div class="divide-y divide-slate-200 dark:divide-slate-800">
+                                        <div
+                                            v-for="shift in day.shifts"
+                                            :key="`${profile.key}-${day.key}-${shift.key}`"
+                                            class="grid grid-cols-2 gap-3 px-4 py-3 text-sm md:grid-cols-[120px_170px_minmax(0,1fr)_100px_80px] md:items-center"
+                                        >
+                                            <div>
+                                                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Shift</p>
+                                                <p class="mt-1 font-semibold text-slate-900 dark:text-white">{{ shift.label }}</p>
+                                            </div>
+                                            <div>
+                                                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Masuk - pulang</p>
+                                                <p class="mt-1 font-mono text-sm font-semibold text-slate-800 dark:text-slate-100">{{ shift.time }}</p>
+                                            </div>
+                                            <div>
+                                                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Istirahat</p>
+                                                <p class="mt-1 leading-5 text-slate-700 dark:text-slate-200">{{ shift.break }}</p>
+                                            </div>
+                                            <div>
+                                                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Jam reguler</p>
+                                                <p class="mt-1 font-semibold text-slate-900 dark:text-white">{{ shift.standard_hours }} jam</p>
+                                            </div>
+                                            <div>
+                                                <p class="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Punch</p>
+                                                <p class="mt-1 font-semibold text-slate-900 dark:text-white">{{ shift.punch_count }}x</p>
+                                            </div>
+                                            <p class="col-span-2 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 dark:bg-slate-950/50 dark:text-slate-400 md:col-span-5">
+                                                {{ shift.note }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </template>
+
+                <template v-else-if="guideSection === 'ketentuan'">
+                    <div class="space-y-5">
+                        <section
+                            v-for="group in scheduleGuide.requirements"
+                            :key="group.title"
+                            class="rounded-2xl border border-slate-200 p-4 dark:border-slate-800"
+                        >
+                            <h3 class="text-sm font-bold text-slate-900 dark:text-white">{{ group.title }}</h3>
+                            <div class="mt-3 grid gap-3 md:grid-cols-2">
+                                <div
+                                    v-for="item in group.items"
+                                    :key="item.title"
+                                    class="rounded-xl border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/40"
+                                >
+                                    <p class="text-xs font-semibold text-slate-500 dark:text-slate-400">{{ item.title }}</p>
+                                    <p class="mt-1 text-sm font-bold text-slate-900 dark:text-white">{{ item.value }}</p>
+                                    <p class="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">{{ item.description }}</p>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </template>
+
+                <template v-else>
+                    <div>
+                        <div class="flex items-end justify-between gap-3">
+                            <div>
+                                <h3 class="text-sm font-semibold text-slate-900 dark:text-white">Jadwal khusus tersimpan</h3>
+                                <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                    {{ specialWorkSchedules.length.toLocaleString("id-ID") }} jadwal tercatat.
+                                </p>
+                            </div>
+                        </div>
+
+                        <DataTable
+                            v-if="specialWorkSchedules.length"
+                            :value="specialWorkSchedules"
+                            paginator
+                            :rows="6"
+                            :rows-per-page-options="[6, 10, 25]"
+                            scrollable
+                            class="mt-3"
+                        >
+                            <Column field="name" header="Periode" style="min-width: 170px">
+                                <template #body="{ data }">
+                                    <p class="font-semibold text-slate-900 dark:text-white">{{ data.name }}</p>
+                                    <p class="mt-1 text-xs text-slate-500">{{ formatDate(data.starts_on) }} - {{ formatDate(data.ends_on) }}</p>
+                                </template>
+                            </Column>
+                            <Column field="scope" header="Scope" style="min-width: 145px" />
+                            <Column field="profile" header="Profile" style="min-width: 130px" />
+                            <Column field="day_type" header="Hari" style="min-width: 115px" />
+                            <Column field="shift" header="Shift" style="min-width: 105px" />
+                            <Column header="Jam kerja" style="min-width: 155px">
+                                <template #body="{ data }">
+                                    <span class="font-mono">{{ data.check_in }} - {{ data.check_out }}{{ data.check_out_day_offset ? " +1d" : "" }}</span>
+                                </template>
+                            </Column>
+                            <Column header="Reguler" style="min-width: 90px">
+                                <template #body="{ data }">{{ data.standard_work_hours }} jam</template>
+                            </Column>
+                            <Column field="expected_punch_count" header="Punch" style="min-width: 80px" />
+                            <Column field="notes" header="Catatan" style="min-width: 220px">
+                                <template #body="{ data }">{{ data.notes || "-" }}</template>
+                            </Column>
+                        </DataTable>
+                        <EmptyState
+                            v-else
+                            title="Belum ada jadwal khusus"
+                            description="Jadwal Ramadan dan periode khusus lain akan tampil di sini setelah ditambahkan dari Developer Settings."
+                            icon="pi pi-clock"
+                            class="mt-3"
+                        />
+                    </div>
+                </template>
+            </div>
+        </Dialog>
+
+        <Dialog
+            v-model:visible="importDialogVisible"
+            header="Import Excel"
+            modal
+            :style="{ width: 'min(94vw, 980px)' }"
+            :breakpoints="{ '960px': '94vw' }"
+            class="attendance-responsive-dialog"
+        >
+            <div class="space-y-5">
+                <SelectButton
+                    v-model="importSection"
+                    :options="importSections"
+                    option-label="label"
+                    option-value="value"
+                    :allow-empty="false"
+                    class="w-full"
+                />
+
+                <template v-if="importSection === 'rekap'">
+                    <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+                        <div class="mb-4">
+                            <h3 class="text-sm font-semibold text-slate-900 dark:text-white">Import rekap absensi</h3>
+                            <p class="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                                Upload Attendance Logs satu hari. NIP dicocokkan ke data karyawan dan ID tanpa punch dilewati.
+                            </p>
+                        </div>
+                        <form class="space-y-4" @submit.prevent="uploadAttendance">
+                            <div>
+                                <label for="attendance-file" class="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                                    File rekap Attendance Logs
+                                </label>
+                                <input
+                                    id="attendance-file"
+                                    :key="fileInputKey"
+                                    type="file"
+                                    accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    aria-describedby="attendance-file-guidance"
+                                    class="block w-full cursor-pointer rounded-xl border border-dashed border-slate-300 bg-white px-4 py-5 text-sm text-slate-600 file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-red-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:border-red-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                                    @change="chooseUploadFile"
+                                />
+                                <p id="attendance-file-guidance" class="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                                    Maksimal 5 MB. Punch berulang dalam waktu berdekatan hanya disimpan sekali.
+                                </p>
+                                <p v-if="uploadForm.errors.attendance_file" class="mt-2 text-xs font-medium text-red-600 dark:text-red-400">
+                                    {{ uploadForm.errors.attendance_file }}
+                                </p>
+                            </div>
+                            <ProgressBar v-if="uploadForm.progress" :value="uploadProgress" :show-value="false" class="h-2" />
+                            <div class="flex justify-end">
+                                <Button
+                                    type="submit"
+                                    label="Import dan bandingkan"
+                                    icon="pi pi-upload"
+                                    severity="danger"
+                                    class="w-full sm:w-auto"
+                                    :loading="uploadForm.processing"
+                                    :disabled="!uploadForm.attendance_file"
+                                />
+                            </div>
+                        </form>
+                    </div>
+                </template>
+
+                <template v-else>
+                    <div v-if="latestImport" class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.75fr)]">
+                        <div class="rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+                            <div class="flex items-start justify-between gap-3">
+                                <div>
+                                    <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Import terakhir</p>
+                                    <p class="mt-1 font-semibold text-slate-900 dark:text-white">{{ latestImport.filename }}</p>
+                                    <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                        {{ formatDate(latestImport.attendance_date) }} · {{ formatDateTime(latestImport.imported_at) }}
+                                    </p>
+                                </div>
+                                <Tag :severity="latestImport.unmatched_employee_count || latestImport.missing_punch_count ? 'warn' : 'success'">
+                                    {{ latestImport.unmatched_employee_count || latestImport.missing_punch_count ? "Perlu dicek" : "Selesai" }}
+                                </Tag>
+                            </div>
+                            <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                                <div>
+                                    <p class="text-xs text-slate-500">Diproses</p>
+                                    <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.processed_employee_count.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-slate-500">Tanpa punch</p>
+                                    <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.skipped_without_punch_count.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-slate-500">NIP tidak cocok</p>
+                                    <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.unmatched_employee_count.toLocaleString("id-ID") }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-xs text-slate-500">Missed punch</p>
+                                    <p class="font-semibold text-slate-900 dark:text-white">{{ latestImport.missing_punch_count.toLocaleString("id-ID") }}</p>
+                                </div>
+                            </div>
+                            <div v-if="latestImport.unmatched_user_ids.length" class="mt-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                                NIP tidak ditemukan:
+                                <span class="font-mono">{{ latestImport.unmatched_user_ids.join(", ") }}</span>
+                            </div>
+                        </div>
+                        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Riwayat singkat</p>
+                            <div v-if="recentImports.length > 1" class="mt-3 space-y-3">
+                                <div v-for="item in recentImports.slice(1)" :key="item.id" class="flex items-center justify-between gap-3 text-xs">
+                                    <span class="truncate text-slate-600 dark:text-slate-300">{{ formatDate(item.attendance_date) }} · {{ item.filename }}</span>
+                                    <span class="shrink-0 text-slate-400">{{ item.processed_employee_count }} karyawan</span>
+                                </div>
+                            </div>
+                            <p v-else class="mt-3 text-xs text-slate-400">Belum ada riwayat import lain.</p>
+                        </div>
+                    </div>
+                    <EmptyState
+                        v-else
+                        title="Belum ada import"
+                        description="Pilih Rekap Absensi untuk mengunggah file Attendance Logs."
+                        icon="pi pi-file-excel"
+                    />
+                </template>
+            </div>
         </Dialog>
 
         <Dialog
@@ -1048,6 +1674,7 @@ function statusSeverity(status) {
             modal
             :style="{ width: 'min(96vw, 1180px)' }"
             :breakpoints="{ '960px': '96vw' }"
+            class="attendance-responsive-dialog"
         >
             <div class="space-y-5">
                 <div class="rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
@@ -1113,12 +1740,13 @@ function statusSeverity(status) {
                                 input-class="w-full"
                             />
                         </FormField>
-                        <div class="flex items-end gap-2 xl:col-span-4">
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-end xl:col-span-4">
                             <Button
                                 type="submit"
                                 label="Scan sekarang"
                                 icon="pi pi-search"
                                 severity="warn"
+                                class="w-full sm:w-auto"
                                 :loading="anomalyScanLoading"
                             />
                             <span class="pb-3 text-xs text-slate-500 dark:text-slate-400">

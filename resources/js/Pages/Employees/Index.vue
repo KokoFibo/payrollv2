@@ -18,7 +18,7 @@ const canExport = computed(() => page.props.auth?.can?.exportEmployees ?? false)
 const canExportKhusus = computed(() => page.props.auth?.can?.exportEmployeesKhusus ?? false);
 const loading = ref(false);
 const searchTimer = ref(null);
-const filters = reactive({ ...props.filters });
+const filters = reactive(normalizedFilterState(props.filters));
 const exportMenu = ref(null);
 const specialExportDialog = ref(false);
 
@@ -69,6 +69,37 @@ const currency = new Intl.NumberFormat("id-ID", {
     maximumFractionDigits: 0,
 });
 
+function normalizedFilterState(source) {
+    return {
+        ...source,
+        companyId: filterId(source.companyId),
+        directorateId: filterId(source.directorateId),
+        departmentId: filterId(source.departmentId),
+        jabatanId: filterId(source.jabatanId),
+        perPage: Number(source.perPage) || 10,
+    };
+}
+
+function filterId(value) {
+    if (value === null || value === undefined || value === "") {
+        return null;
+    }
+
+    const id = Number(value);
+
+    return Number.isFinite(id) ? id : null;
+}
+
+function employeeStatusSeverity(status) {
+    return {
+        PKWT: "success",
+        PKWTT: "success",
+        Dirumahkan: "info",
+        Resigned: "warn",
+        Blacklist: "danger",
+    }[status] || "secondary";
+}
+
 function queryState() {
     return {
         search: filters.search || "",
@@ -113,10 +144,10 @@ function resetFilters() {
     Object.assign(filters, {
         search: "",
         status: "active",
-        companyId: "",
-        directorateId: "",
-        departmentId: "",
-        jabatanId: "",
+        companyId: null,
+        directorateId: null,
+        departmentId: null,
+        jabatanId: null,
         perPage: 10,
         sortField: "nip",
         sortDirection: "desc",
@@ -252,7 +283,7 @@ function formatDate(value) {
                             placeholder="Semua Status"
                             show-clear
                             class="h-11 w-full"
-                            @change="load(true)"
+                            @update:model-value="load(true)"
                         />
                         <Select
                             v-model="filters.companyId"
@@ -263,7 +294,7 @@ function formatDate(value) {
                             filter
                             show-clear
                             class="h-11 w-full"
-                            @change="load(true)"
+                            @update:model-value="load(true)"
                         />
                         <Select
                             v-model="filters.directorateId"
@@ -274,7 +305,7 @@ function formatDate(value) {
                             filter
                             show-clear
                             class="h-11 w-full"
-                            @change="load(true)"
+                            @update:model-value="load(true)"
                         />
                         <Select
                             v-model="filters.departmentId"
@@ -285,7 +316,7 @@ function formatDate(value) {
                             filter
                             show-clear
                             class="h-11 w-full"
-                            @change="load(true)"
+                            @update:model-value="load(true)"
                         />
                         <Select
                             v-model="filters.jabatanId"
@@ -296,7 +327,7 @@ function formatDate(value) {
                             filter
                             show-clear
                             class="h-11 w-full"
-                            @change="load(true)"
+                            @update:model-value="load(true)"
                         />
                         <Button label="Reset filter" icon="pi pi-filter-slash" severity="secondary" text @click="resetFilters" />
                     </div>
@@ -318,7 +349,7 @@ function formatDate(value) {
                                 v-model="filters.perPage"
                                 :options="filterOptions.perPage"
                                 class="w-24 min-w-24"
-                                @change="load(true)"
+                                @update:model-value="load(true)"
                             />
                         </div>
                     </div>
@@ -390,7 +421,7 @@ function formatDate(value) {
                         </Column>
                         <Column field="status_karyawan" header="Status" sortable style="min-width: 115px">
                             <template #body="{ data }">
-                                <Tag :severity="data.status_active ? 'success' : 'danger'" class="whitespace-nowrap">
+                                <Tag :severity="employeeStatusSeverity(data.status)" class="whitespace-nowrap">
                                     {{ data.status_label || "-" }}
                                 </Tag>
                             </template>
@@ -399,25 +430,31 @@ function formatDate(value) {
                             <template #body="{ data }">{{ data.lama_bekerja }}</template>
                         </Column>
                         <Column field="metode_penggajian" header="Metode" sortable style="min-width: 120px">
-                            <template #body="{ data }">{{ data.metode_penggajian || "-" }}</template>
+                            <template #body="{ data }">{{ data.metode_penggajian_label || "-" }}</template>
                         </Column>
                         <Column field="gaji_pokok" header="Gaji Pokok" sortable style="min-width: 145px">
-                            <template #body="{ data }">{{ data.salary_masked ? "" : (data.gaji_pokok == null ? "-" : currency.format(data.gaji_pokok)) }}</template>
+                            <template #body="{ data }">
+                                <span v-if="data.salary_restricted" class="inline-flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-300" title="Gaji pokok disembunyikan untuk role Admin">
+                                    <i class="pi pi-lock text-xs" aria-hidden="true" />
+                                    ••••••
+                                </span>
+                                <span v-else>{{ data.gaji_pokok == null ? "-" : currency.format(data.gaji_pokok) }}</span>
+                            </template>
                         </Column>
                         <Column field="gaji_bpjs" header="Gaji BPJS" sortable style="min-width: 130px">
-                            <template #body="{ data }">{{ data.salary_masked ? "" : (data.gaji_bpjs == null ? "-" : currency.format(data.gaji_bpjs)) }}</template>
+                            <template #body="{ data }">{{ data.gaji_bpjs == null ? "-" : currency.format(data.gaji_bpjs) }}</template>
                         </Column>
                         <Column field="gaji_overtime" header="Overtime" sortable style="min-width: 130px">
-                            <template #body="{ data }">{{ data.salary_masked ? "" : (data.gaji_overtime == null ? "-" : currency.format(data.gaji_overtime)) }}</template>
+                            <template #body="{ data }">{{ data.gaji_overtime == null ? "-" : currency.format(data.gaji_overtime) }}</template>
                         </Column>
                         <Column field="tanggal_update" header="Last Adjust" sortable style="min-width: 125px">
                             <template #body="{ data }">{{ formatDate(data.tanggal_update) }}</template>
                         </Column>
                         <Column field="iuran_air" header="Iuran Air" sortable style="min-width: 125px">
-                            <template #body="{ data }">{{ data.salary_masked ? "" : (data.iuran_air == null ? "-" : currency.format(data.iuran_air)) }}</template>
+                            <template #body="{ data }">{{ data.iuran_air == null ? "-" : currency.format(data.iuran_air) }}</template>
                         </Column>
                         <Column field="iuran_locker" header="Iuran Locker" sortable style="min-width: 135px">
-                            <template #body="{ data }">{{ data.salary_masked ? "" : (data.iuran_locker == null ? "-" : currency.format(data.iuran_locker)) }}</template>
+                            <template #body="{ data }">{{ data.iuran_locker == null ? "-" : currency.format(data.iuran_locker) }}</template>
                         </Column>
                         <Column header="Aksi" frozen align-frozen="right" style="min-width: 110px">
                             <template #body="{ data }">

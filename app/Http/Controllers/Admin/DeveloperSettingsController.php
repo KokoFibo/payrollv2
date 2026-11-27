@@ -35,9 +35,14 @@ class DeveloperSettingsController extends Controller
         Gate::authorize('access-developer-settings');
 
         $resource = (string) $request->query('resource', 'companies');
+        $initialSection = (string) $request->query('section', 'master');
 
         if (! in_array($resource, self::RESOURCE_OPTIONS, true)) {
             $resource = 'companies';
+        }
+
+        if ($initialSection !== 'work-schedules') {
+            $initialSection = 'master';
         }
 
         $config = MasterDataResources::find($resource);
@@ -203,6 +208,11 @@ class DeveloperSettingsController extends Controller
             'nationalHolidays' => $nationalHolidays,
             'calendarOverrides' => $calendarOverrides,
             'specialWorkSchedules' => $specialWorkSchedules,
+            'scheduleGuide' => [
+                'filename' => AttendanceScheduleGuideController::TemplateFilename,
+                'downloadAvailable' => is_file(AttendanceScheduleGuideController::templatePath()),
+            ],
+            'initialSection' => $initialSection,
             'workCalendarOptions' => [
                 'companies' => $companyOptions,
                 'profiles' => collect(SpecialWorkSchedule::PROFILES)
@@ -244,7 +254,7 @@ class DeveloperSettingsController extends Controller
         return back()->with('toast', [
             'type' => 'success',
             'title' => 'Batas gaji Admin diperbarui',
-            'message' => 'Role Admin sekarang hanya dapat melihat karyawan sampai batas gaji yang baru.',
+            'message' => 'Role Admin sekarang hanya dapat melihat gaji pokok dan gaji tetap sampai batas gaji yang baru.',
         ]);
     }
 

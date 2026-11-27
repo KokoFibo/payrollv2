@@ -28,6 +28,8 @@ const props = defineProps({
     nationalHolidays: { type: Array, required: true },
     calendarOverrides: { type: Array, required: true },
     specialWorkSchedules: { type: Array, required: true },
+    scheduleGuide: { type: Object, required: true },
+    initialSection: { type: String, default: "master" },
     workCalendarOptions: { type: Object, required: true },
     counts: { type: Object, required: true },
     adminSalaryLimit: { type: Number, required: true },
@@ -35,7 +37,7 @@ const props = defineProps({
 });
 
 const confirm = useConfirm();
-const section = ref("master");
+const section = ref(props.initialSection);
 const search = ref(props.filters.search);
 const perPage = ref(props.filters.perPage);
 const searchTimer = ref(null);
@@ -381,7 +383,7 @@ function copyMasterData() {
                     <div class="px-1">
                         <h2 class="text-base font-bold text-slate-950 dark:text-white">Batas sensor gaji Admin</h2>
                         <p class="mt-1 text-xs font-normal text-slate-500 dark:text-slate-400">
-                            Di halaman Employees, role Admin tidak dapat melihat atau mengubah data payroll karyawan yang gaji pokoknya melebihi batas ini. Data pribadi dan kepegawaian tetap dapat diedit.
+                            Di halaman Employees, role Admin tidak dapat melihat atau mengubah gaji pokok dan gaji tetap karyawan yang gaji pokoknya melebihi batas ini. Komponen payroll lain tetap dapat diakses.
                         </p>
                     </div>
                 </template>
@@ -467,6 +469,7 @@ function copyMasterData() {
                 <SpecialWorkSchedulePanel
                     :schedules="specialWorkSchedules"
                     :options="workCalendarOptions"
+                    :schedule-guide="scheduleGuide"
                 />
             </section>
 

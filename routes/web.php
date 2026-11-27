@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\AttendanceCleanupController;
 use App\Http\Controllers\Admin\AttendanceController;
 use App\Http\Controllers\Admin\AttendanceImportController;
+use App\Http\Controllers\Admin\AttendanceScheduleGuideController;
 use App\Http\Controllers\Admin\CalendarOverrideController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\DeveloperSettingsController;
@@ -56,10 +57,13 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
     Route::prefix('attendance')->name('attendance.')->group(function () {
         Route::get('/', [AttendanceController::class, 'index'])->name('index');
         Route::get('/anomalies', [AttendanceController::class, 'scanAnomalies'])->name('anomalies');
+        Route::get('/schedule-guide', [AttendanceScheduleGuideController::class, 'download'])
+            ->name('schedule-guide.download');
         Route::post('/import', [AttendanceImportController::class, 'store'])->name('import');
         Route::post('/', [AttendanceController::class, 'store'])->name('store');
         Route::delete('/day', [AttendanceController::class, 'destroyDay'])->name('destroy-day');
         Route::put('/inline', [AttendanceController::class, 'updateInline'])->name('update-inline');
+        Route::put('/{attendance}/review', [AttendanceController::class, 'resolveReview'])->name('resolve-review');
         Route::delete('/{attendance}/review', [AttendanceController::class, 'destroyReview'])->name('destroy-review');
         Route::put('/{attendance}', [AttendanceController::class, 'update'])->name('update');
         Route::delete('/{attendance}', [AttendanceController::class, 'destroy'])->name('destroy');
@@ -122,6 +126,8 @@ Route::middleware(['auth', 'verified'])->prefix('admin')->name('admin.')->group(
             ->name('developer-settings.calendar-overrides.destroy');
         Route::post('/developer-settings/special-work-schedules', [SpecialWorkScheduleController::class, 'store'])
             ->name('developer-settings.special-work-schedules.store');
+        Route::post('/developer-settings/special-work-schedules/import', [AttendanceScheduleGuideController::class, 'import'])
+            ->name('developer-settings.special-work-schedules.import');
         Route::post('/developer-settings/special-work-schedules/bulk', SpecialWorkScheduleBulkController::class)
             ->name('developer-settings.special-work-schedules.bulk');
         Route::put('/developer-settings/special-work-schedules/{specialWorkSchedule}', [SpecialWorkScheduleController::class, 'update'])

@@ -1,12 +1,13 @@
 <?php
 
 use App\Enums\KaryawanStatus;
+use App\Enums\PayrollMethod;
 use App\Models\AdminVisibilitySetting;
 use App\Models\Karyawan;
 use App\Models\User;
 use Inertia\Testing\AssertableInertia as Assert;
 
-test('admin sees all employees but salary fields above the limit are blank', function () {
+test('admin sees payroll details but primary and fixed salary above the limit are blank', function () {
     AdminVisibilitySetting::factory()->create(['admin_salary_limit' => 4_500_000]);
     $admin = User::factory()->create(['role' => 5]);
     Karyawan::factory()->create([
@@ -33,14 +34,14 @@ test('admin sees all employees but salary fields above the limit are blank', fun
         ->assertInertia(fn (Assert $page) => $page
             ->has('karyawans.data', 2)
             ->where('karyawans.data.0.nama', 'Masked Salary Employee')
-            ->where('karyawans.data.0.salary_masked', true)
+            ->where('karyawans.data.0.salary_restricted', true)
             ->where('karyawans.data.0.gaji_pokok', null)
-            ->where('karyawans.data.0.gaji_bpjs', null)
-            ->where('karyawans.data.0.gaji_overtime', null)
-            ->where('karyawans.data.0.iuran_air', null)
-            ->where('karyawans.data.0.iuran_locker', null)
+            ->where('karyawans.data.0.gaji_bpjs', 300_000)
+            ->where('karyawans.data.0.gaji_overtime', 500_000)
+            ->where('karyawans.data.0.iuran_air', 50_000)
+            ->where('karyawans.data.0.iuran_locker', 25_000)
             ->where('karyawans.data.1.nama', 'Visible Salary Employee')
-            ->where('karyawans.data.1.salary_masked', false)
+            ->where('karyawans.data.1.salary_restricted', false)
             ->where('karyawans.data.1.gaji_pokok', 4_500_000));
 });
 
@@ -57,7 +58,7 @@ test('higher roles see salary values without masking', function (int $role) {
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->has('karyawans.data', 1)
-            ->where('karyawans.data.0.salary_masked', false)
+            ->where('karyawans.data.0.salary_restricted', false)
             ->where('karyawans.data.0.gaji_pokok', 9_000_000));
 })->with([
     'senior admin' => [6],
@@ -65,13 +66,14 @@ test('higher roles see salary values without masking', function (int $role) {
     'developer' => [8],
 ]);
 
-test('admin can open employee above the salary limit but payroll fields are hidden', function () {
+test('admin can open payroll for employee above the salary limit with only salary values hidden', function () {
     AdminVisibilitySetting::factory()->create(['admin_salary_limit' => 4_500_000]);
     $admin = User::factory()->create(['role' => 5]);
     $employee = Karyawan::factory()->create([
         'gaji_pokok' => 6_000_000,
+        'gaji_tetap' => 750_000,
         'gaji_overtime' => 500_000,
-        'metode_penggajian' => 'Bulanan',
+        'metode_penggajian' => PayrollMethod::Monthly->value,
     ]);
 
     $this->actingAs($admin)
@@ -79,10 +81,13 @@ test('admin can open employee above the salary limit but payroll fields are hidd
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('Employees/Form')
-            ->where('salaryLocked', true)
+            ->where('salaryRestricted', true)
             ->where('employee.gaji_pokok', null)
-            ->where('employee.gaji_overtime', null)
-            ->where('employee.metode_penggajian', null));
+            ->where('employee.gaji_tetap', null)
+            ->where('employee.gaji_overtime', 500_000)
+            ->where('employee.metode_penggajian', PayrollMethod::Monthly->value)
+            ->where('options.payrollMethods.0.value', PayrollMethod::Hourly->value)
+            ->where('options.payrollMethods.1.value', PayrollMethod::Monthly->value));
 });
 
 test('admin can edit employee within the salary limit', function () {
@@ -95,25 +100,28 @@ test('admin can edit employee within the salary limit', function () {
         ->assertOk();
 });
 
-test('admin can edit non payroll data above the limit while payroll values stay unchanged', function () {
+test('admin above the limit can update payroll except primary and fixed salary', function () {
     AdminVisibilitySetting::factory()->create(['admin_salary_limit' => 4_500_000]);
     $admin = User::factory()->create(['role' => 5]);
     $employee = Karyawan::factory()->create([
         'gaji_pokok' => 6_000_000,
+        'gaji_tetap' => 750_000,
         'gaji_overtime' => 500_000,
-        'metode_penggajian' => 'Bulanan',
+        'metode_penggajian' => PayrollMethod::Monthly->value,
     ]);
     $payload = $employee->only($employee->getFillable());
     $payload['nama'] = 'Updated Without Payroll Access';
     $payload['status_karyawan'] = $employee->status_karyawan->value;
     $payload['outsource'] = $employee->outsource->value;
+    $payload['metode_penggajian'] = $employee->metode_penggajian->value;
     $payload['tanggal_lahir'] = $employee->tanggal_lahir?->toDateString();
     $payload['tanggal_bergabung'] = $employee->tanggal_bergabung?->toDateString();
     $payload['tanggal_resigned'] = $employee->tanggal_resigned?->toDateString();
     $payload['tanggal_blacklist'] = $employee->tanggal_blacklist?->toDateString();
     $payload['gaji_pokok'] = 9_000_000;
+    $payload['gaji_tetap'] = 2_000_000;
     $payload['gaji_overtime'] = 2_000_000;
-    $payload['metode_penggajian'] = 'Harian';
+    $payload['metode_penggajian'] = PayrollMethod::Hourly->value;
 
     foreach (['potongan_jht', 'potongan_jp', 'potongan_jkk', 'potongan_jkm', 'potongan_kesehatan'] as $field) {
         $payload[$field] = (bool) ($payload[$field] ?? false);
@@ -126,8 +134,9 @@ test('admin can edit non payroll data above the limit while payroll values stay 
 
     expect($employee->refresh()->nama)->toBe('Updated Without Payroll Access')
         ->and($employee->gaji_pokok)->toBe(6_000_000)
-        ->and($employee->gaji_overtime)->toBe(500_000)
-        ->and($employee->metode_penggajian)->toBe('Bulanan');
+        ->and($employee->gaji_tetap)->toBe(750_000)
+        ->and($employee->gaji_overtime)->toBe(2_000_000)
+        ->and($employee->metode_penggajian)->toBe(PayrollMethod::Hourly);
 });
 
 test('developer can adjust the salary masking limit', function () {

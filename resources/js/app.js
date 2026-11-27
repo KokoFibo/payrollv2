@@ -31,6 +31,7 @@ import MultiSelect from "primevue/multiselect";
 import Panel from "primevue/panel";
 import ProgressBar from "primevue/progressbar";
 import Select from "primevue/select";
+import SelectButton from "primevue/selectbutton";
 import Skeleton from "primevue/skeleton";
 import Tag from "primevue/tag";
 import Textarea from "primevue/textarea";
@@ -101,6 +102,7 @@ createInertiaApp({
             .component("Panel", Panel)
             .component("ProgressBar", ProgressBar)
             .component("Select", Select)
+            .component("SelectButton", SelectButton)
             .component("Skeleton", Skeleton)
             .component("Tag", Tag)
             .component("Textarea", Textarea)

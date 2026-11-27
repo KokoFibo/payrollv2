@@ -163,7 +163,7 @@ class KaryawanExcelKhususExporter
             $karyawan->tanggal_lahir?->format('d-m-Y'),
             $karyawan->gender,
             $karyawan->alamat_identitas,
-            $karyawan->alamat_tinggal,
+            $karyawan->alamat_tinggal_sekarang,
             $karyawan->email,
             $karyawan->hp,
             $karyawan->company?->name,

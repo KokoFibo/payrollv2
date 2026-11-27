@@ -8,11 +8,13 @@ import EmptyState from "@/Components/Admin/EmptyState.vue";
 const props = defineProps({
     schedules: { type: Array, required: true },
     options: { type: Object, required: true },
+    scheduleGuide: { type: Object, required: true },
 });
 
 const confirm = useConfirm();
 const dialogVisible = ref(false);
 const periodDialogVisible = ref(false);
+const guideFileInputKey = ref(0);
 const editingSchedule = ref(null);
 const selectedPeriodKey = ref(null);
 const form = useForm({
@@ -36,6 +38,10 @@ const periodForm = useForm({
     ends_on: "",
     schedules: defaultPeriodSchedules(),
 });
+const guideForm = useForm({
+    schedule_file: null,
+});
+const guideUploadProgress = computed(() => guideForm.progress?.percentage ?? 0);
 const periodGroups = computed(() => {
     const groups = new Map();
 
@@ -263,6 +269,26 @@ function removeSchedule(schedule) {
     });
 }
 
+function downloadScheduleGuide() {
+    window.location.assign(route("admin.attendance.schedule-guide.download"));
+}
+
+function chooseGuideFile(event) {
+    guideForm.schedule_file = event.target.files?.[0] ?? null;
+    guideForm.clearErrors();
+}
+
+function uploadGuide() {
+    guideForm.post(route("admin.developer-settings.special-work-schedules.import"), {
+        forceFormData: true,
+        preserveScroll: true,
+        onSuccess: () => {
+            guideForm.reset();
+            guideFileInputKey.value++;
+        },
+    });
+}
+
 function formatDate(value) {
     if (!value) {
         return "-";
@@ -286,12 +312,60 @@ function formatDate(value) {
                     </p>
                 </div>
                 <div class="flex flex-wrap gap-2">
+                    <Button
+                        label="Download Pedoman Jadwal Kerja Excel"
+                        icon="pi pi-download"
+                        severity="secondary"
+                        text
+                        :disabled="!scheduleGuide.downloadAvailable"
+                        @click="downloadScheduleGuide"
+                    />
                     <Button label="Atur jadwal serentak" icon="pi pi-calendar-plus" severity="secondary" outlined @click="openPeriodCreate" />
                     <Button label="Tambah jadwal" icon="pi pi-plus" @click="openCreate" />
                 </div>
             </div>
         </template>
         <template #content>
+            <Message v-if="!scheduleGuide.downloadAvailable" severity="warn" :closable="false" class="mb-4">
+                Template pedoman jadwal belum tersedia di server.
+            </Message>
+            <form
+                class="mb-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4 dark:border-slate-700 dark:bg-slate-950/40"
+                @submit.prevent="uploadGuide"
+            >
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <h3 class="text-sm font-semibold text-slate-900 dark:text-white">Upload perubahan jadwal dari Excel</h3>
+                        <p class="mt-1 max-w-3xl text-xs leading-5 text-slate-500 dark:text-slate-400">
+                            Isi bagian Jadwal Perubahan / Ramadan pada tab Jadwal Kerja. Jadwal baru akan ditambahkan atau diperbarui;
+                            jadwal lain tidak dihapus.
+                        </p>
+                    </div>
+                    <div class="w-full max-w-xl">
+                        <input
+                            :key="guideFileInputKey"
+                            type="file"
+                            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            class="block w-full cursor-pointer rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm text-slate-600 file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:file:bg-slate-700"
+                            @change="chooseGuideFile"
+                        />
+                        <p v-if="guideForm.errors.schedule_file" class="mt-2 text-xs font-medium text-red-600 dark:text-red-400">
+                            {{ guideForm.errors.schedule_file }}
+                        </p>
+                        <ProgressBar v-if="guideForm.progress" :value="guideUploadProgress" :show-value="false" class="mt-2 h-2" />
+                    </div>
+                </div>
+                <div class="mt-3 flex justify-end">
+                    <Button
+                        type="submit"
+                        label="Upload dan simpan jadwal"
+                        icon="pi pi-upload"
+                        :loading="guideForm.processing"
+                        :disabled="!guideForm.schedule_file"
+                    />
+                </div>
+            </form>
+
             <DataTable :value="props.schedules" paginator :rows="10" :rows-per-page-options="[10, 25, 50]" scrollable>
                 <template #empty>
                     <EmptyState title="Belum ada jadwal khusus" description="Tambahkan periode jadwal seperti Ramadan pertama." icon="pi pi-clock" />

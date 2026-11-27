@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\KaryawanStatus;
 use App\Enums\OutsourceType;
+use App\Enums\PayrollMethod;
 use Database\Factories\KaryawanFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -28,7 +29,7 @@ use Illuminate\Support\Str;
     'jenis_identitas',
     'no_identitas',
     'alamat_identitas',
-    'alamat_tinggal',
+    'alamat_tinggal_sekarang',
     'status_karyawan',
     'tanggal_bergabung',
     'tanggal_resigned',
@@ -64,12 +65,12 @@ use Illuminate\Support\Str;
     'potongan_kesehatan',
     'no_npwp',
     'ptkp',
-    'kontak_darurat',
-    'kontak_darurat2',
-    'hp1',
-    'hp2',
-    'hubungan1',
-    'hubungan2',
+    'nama_contact_darurat',
+    'nama_contact_darurat_2',
+    'contact_darurat_1',
+    'contact_darurat_2',
+    'hubungan_1',
+    'hubungan_2',
     'tanggungan',
     'id_file_karyawan',
     'tanggal_update',
@@ -104,6 +105,7 @@ class Karyawan extends Model
             'tanggal_update' => 'date',
             'status_karyawan' => KaryawanStatus::class,
             'outsource' => OutsourceType::class,
+            'metode_penggajian' => PayrollMethod::class,
             'gaji_pokok' => 'integer',
             'gaji_tetap' => 'integer',
             'gaji_overtime' => 'integer',

@@ -47,10 +47,12 @@ class AttendanceLatenessCalculator
             $secondIn,
             $toleranceMinutes,
         );
-        $secondOutEarlyMinutes = $this->checkoutEarlyMinutes(
-            $schedule->expectedCheckOut,
-            $secondOut,
-        );
+        $secondOutEarlyMinutes = $schedule->profile === 'security'
+            ? 0
+            : $this->checkoutEarlyMinutes(
+                $schedule->expectedCheckOut,
+                $secondOut,
+            );
         $totalMinutes = $firstInMinutes
             + $firstOutEarlyMinutes
             + $secondInMinutes

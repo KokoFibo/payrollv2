@@ -6,6 +6,10 @@ use Carbon\CarbonImmutable;
 
 class AttendanceTimeCalculator
 {
+    private const SaturdayNightDoubleOvertimeMultiplier = 2.0;
+
+    private const SaturdayNightSingleOvertimeMultiplier = 1.0;
+
     public function __construct(
         private ?AttendancePolicySettings $policySettings = null,
     ) {}
@@ -48,17 +52,7 @@ class AttendanceTimeCalculator
 
         $notes = [...$notes, ...$completenessIssues];
 
-        if ($schedule->expectedCheckIn->isSaturday()) {
-            [$workedHours, $overtimeHours] = $this->saturdayHours(
-                $schedule,
-                $firstIn,
-                $firstOut,
-                $secondIn,
-                $secondOut,
-                $overtimeIn,
-                $overtimeOut,
-            );
-        } elseif ($schedule->profile === 'security') {
+        if ($schedule->profile === 'security') {
             [$workedHours, $overtimeHours] = $this->securityHours(
                 $schedule,
                 $firstIn,
@@ -69,52 +63,15 @@ class AttendanceTimeCalculator
                 $requiresReview,
             );
         } else {
-            $regularStart = $firstIn->greaterThan($schedule->expectedCheckIn)
-                ? $firstIn
-                : $schedule->expectedCheckIn;
-            $roundedRegularHours = 0.0;
-
-            if ($firstOut !== null && $secondIn !== null) {
-                $firstSegmentEnd = $this->minimum($firstOut, $schedule->expectedCheckOut);
-                $roundedRegularHours += $this->floorToHalfHour(
-                    $this->hoursBetween($regularStart, $firstSegmentEnd),
-                );
-
-                $secondSessionStart = $secondIn;
-                $secondSessionEnd = $this->minimum(
-                    $secondOut ?? $schedule->expectedCheckOut,
-                    $schedule->expectedCheckOut,
-                );
-                $roundedRegularHours += $this->floorToHalfHour(
-                    $this->hoursBetween(
-                        $secondSessionStart,
-                        $secondSessionEnd,
-                    ),
-                );
-            } else {
-                $regularEnd = $this->minimum(
-                    $secondOut ?? $firstOut ?? $schedule->expectedCheckOut,
-                    $schedule->expectedCheckOut,
-                );
-                $grossHours = $this->hoursBetween($regularStart, $regularEnd);
-                $expectedGrossHours = $this->hoursBetween(
-                    $schedule->expectedCheckIn,
-                    $schedule->expectedCheckOut,
-                );
-                $breakHours = max(
-                    0,
-                    min($expectedGrossHours, $schedule->breakHours),
-                );
-                $roundedRegularHours = $this->floorToHalfHour(
-                    max(0, $grossHours - $breakHours),
-                );
-                $notes[] = 'Punch istirahat tidak ditemukan; jam istirahat standar dikurangkan otomatis.';
+            if ($firstOut === null || $secondIn === null) {
+                $notes[] = 'Punch istirahat tidak ditemukan; jam kerja memakai batas maksimal dan record masuk review.';
             }
 
-            $workedHours = min(
-                $schedule->standardWorkHours,
-                max(0, $roundedRegularHours),
-            );
+            $workedHours = $schedule->standardWorkHours;
+            $notes[] = 'Jam kerja reguler memakai batas maksimal '
+                .$schedule->standardWorkHours
+                .' jam sebelum potongan keterlambatan atau pulang awal.';
+
             $overtimeHours = $this->overtimeHours(
                 $schedule,
                 $secondOut,
@@ -282,33 +239,6 @@ class AttendanceTimeCalculator
     }
 
     /**
-     * @return array{0: float, 1: float}
-     */
-    private function saturdayHours(
-        AttendanceSchedule $schedule,
-        CarbonImmutable $firstIn,
-        ?CarbonImmutable $firstOut,
-        ?CarbonImmutable $secondIn,
-        ?CarbonImmutable $secondOut,
-        ?CarbonImmutable $overtimeIn,
-        ?CarbonImmutable $overtimeOut,
-    ): array {
-        $totalHours = $this->workedHoursFromSlots(
-            $schedule,
-            $firstIn,
-            $firstOut,
-            $secondIn,
-            $secondOut,
-            $overtimeIn,
-            $overtimeOut,
-        );
-        $workedHours = min($schedule->standardWorkHours, $totalHours);
-        $overtimeHours = $this->floorToHalfHour(max(0, $totalHours - $workedHours));
-
-        return [$workedHours, $overtimeHours];
-    }
-
-    /**
      * @param  list<string>  $notes
      * @return array{0: float, 1: float}
      */
@@ -331,65 +261,61 @@ class AttendanceTimeCalculator
             return [0.0, 0.0];
         }
 
-        $totalHours = $this->floorToHalfHour(
-            $this->hoursBetween($regularStart, $lastOut),
+        $workedHours = $schedule->standardWorkHours;
+        $notes[] = 'Security: jam kerja reguler memakai batas maksimal '
+            .$schedule->standardWorkHours
+            .' jam.';
+
+        $overtimeStart = $this->maximum(
+            $regularStart,
+            $schedule->expectedCheckOut,
         );
-        $workedHours = min($schedule->standardWorkHours, $totalHours);
-        $overtimeThreshold = $schedule->expectedCheckIn->addHours(12);
-        $overtimeHours = $this->floorToHalfHour(
-            $this->hoursBetween(
-                $this->maximum($regularStart, $overtimeThreshold),
+        $isSaturdayNight = $schedule->shift === 'night'
+            && $schedule->expectedCheckIn->isSaturday();
+        $overtimeHours = $isSaturdayNight
+            ? $this->saturdayNightOvertimeHours(
+                $schedule,
+                $overtimeStart,
                 $lastOut,
-            ),
-        );
-        $notes[] = 'Security: shift 12 jam dihitung 8 jam reguler dan kelebihan setelah 12 jam dihitung lembur.';
+                $notes,
+            )
+            : $this->floorToHalfHour(
+                $this->hoursBetween($overtimeStart, $lastOut),
+            );
+
+        if (! $isSaturdayNight) {
+            $notes[] = 'Security: jam reguler mengikuti batas shift dan kelebihan setelah jadwal pulang dihitung lembur.';
+        }
 
         return [$workedHours, $overtimeHours];
     }
 
-    private function workedHoursFromSlots(
+    /**
+     * @param  list<string>  $notes
+     */
+    private function saturdayNightOvertimeHours(
         AttendanceSchedule $schedule,
-        CarbonImmutable $firstIn,
-        ?CarbonImmutable $firstOut,
-        ?CarbonImmutable $secondIn,
-        ?CarbonImmutable $secondOut,
-        ?CarbonImmutable $overtimeIn,
-        ?CarbonImmutable $overtimeOut,
+        CarbonImmutable $overtimeStart,
+        CarbonImmutable $lastOut,
+        array &$notes,
     ): float {
-        $regularStart = $this->maximum($firstIn, $schedule->expectedCheckIn);
+        $doubleRateEndsAt = $schedule->expectedCheckOut->setTime(5, 0);
+        $doubleRateHours = $this->floorToHalfHour(
+            $this->hoursBetween(
+                $overtimeStart,
+                $this->minimum($lastOut, $doubleRateEndsAt),
+            ),
+        );
+        $singleRateHours = $this->floorToHalfHour(
+            $this->hoursBetween(
+                $this->maximum($overtimeStart, $doubleRateEndsAt),
+                $lastOut,
+            ),
+        );
+        $notes[] = 'Security Sabtu malam: lembur pukul 00:00-05:00 dikali 2, setelah 05:00 dikali 1.';
 
-        if ($firstOut !== null && $secondIn !== null) {
-            $workedHours = $this->floorToHalfHour(
-                $this->hoursBetween($regularStart, $firstOut),
-            );
-            $secondSessionEnd = $secondOut ?? $schedule->expectedCheckOut;
-            $workedHours += $this->floorToHalfHour(
-                $this->hoursBetween($secondIn, $secondSessionEnd),
-            );
-
-            if ($overtimeOut !== null) {
-                $overtimeStart = $this->maximum(
-                    $overtimeIn ?? $secondSessionEnd,
-                    $secondSessionEnd,
-                );
-                $workedHours += $this->floorToHalfHour(
-                    $this->hoursBetween($overtimeStart, $overtimeOut),
-                );
-            }
-
-            return $workedHours;
-        }
-
-        $lastOut = $this->latestPunch($firstOut, $secondOut, $overtimeOut);
-
-        if ($lastOut === null) {
-            return 0.0;
-        }
-
-        return $this->floorToHalfHour(max(
-            0,
-            $this->hoursBetween($regularStart, $lastOut) - $schedule->breakHours,
-        ));
+        return ($doubleRateHours * self::SaturdayNightDoubleOvertimeMultiplier)
+            + ($singleRateHours * self::SaturdayNightSingleOvertimeMultiplier);
     }
 
     private function latestPunch(?CarbonImmutable ...$punches): ?CarbonImmutable
